@@ -113,7 +113,7 @@ git -C /kaggle/working/helix-role-src pull --ff-only
 Keep model and LoRA weights as Kaggle inputs. The Qwen configs use:
 
 ```text
-/kaggle/input/models/andrewwafik/turbo-qwen-27b/pytorch/human_eval_200/1
+/kaggle/input/models/andrewwafik/turbo-qwen-27b/pytorch/human_eval_200/1/checkpoint-step-200
 ```
 
 The loader reads `adapter_config.json`, resolves its
