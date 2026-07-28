@@ -85,16 +85,90 @@ continuation budget and scores the target task's valid next-transition tokens
 at the donor's abstract stage; EOS probability is a separate diagnostic and
 output length is never substituted for task state.
 
+## Kaggle: clone versus attached code dataset
+
+Clone the repository into `/kaggle/working` while developing. An attached
+Kaggle dataset is a static versioned snapshot; it does not update when GitHub
+changes. Cloning fetches the current branch, while checking out a recorded
+commit gives the same reproducibility as a dataset snapshot.
+
+With Kaggle Internet enabled:
+
+```bash
+cd /kaggle/working
+git clone --depth 1 \
+  https://github.com/Andrew-WR/helix_role_experiment.git \
+  helix-role-src
+cd /kaggle/working/helix-role-src/helix_role_experiment
+pip install -q -e '.[model,analysis]'
+git rev-parse HEAD
+```
+
+On a restarted session, clone again. During one live session, update with:
+
+```bash
+git -C /kaggle/working/helix-role-src pull --ff-only
+```
+
+Keep model and LoRA weights as Kaggle inputs. The Qwen configs use:
+
+```text
+/kaggle/input/models/andrewwafik/turbo-qwen-27b/pytorch/human_eval_200/1
+```
+
+The loader reads `adapter_config.json`, resolves its
+`base_model_name_or_path`, infers the adapted transformer layer from
+`layers_to_transform` or adapter weight keys, loads the base in 4-bit NF4
+across both T4s, and optionally enables the adapter. If the base repository is
+private, authenticate to Hugging Face before preflight.
+
+Run the fail-fast check before loading weights:
+
+```bash
+python scripts/00_kaggle_preflight.py \
+  --config configs/qwen_27b_kaggle_smoke.json
+```
+
+Then run the LoRA smoke:
+
+```bash
+python scripts/01_collect_traces.py \
+  --config configs/qwen_27b_kaggle_smoke.json
+python scripts/02_fourier_audit.py \
+  --config configs/qwen_27b_kaggle_smoke.json
+python scripts/03_fit_shared_subspace.py \
+  --config configs/qwen_27b_kaggle_smoke.json
+python scripts/04_build_counterfactual_prefixes.py \
+  --config configs/qwen_27b_kaggle_smoke.json
+python scripts/05_run_observational_cross.py \
+  --config configs/qwen_27b_kaggle_smoke.json
+python scripts/06_run_causal_interventions.py \
+  --config configs/qwen_27b_kaggle_smoke.json
+python scripts/07_analyze_results.py \
+  --config configs/qwen_27b_kaggle_smoke.json
+```
+
+Run `qwen_27b_base_kaggle_smoke.json` identically for the adapter-disabled
+baseline. Both configs use the adapter metadata to resolve the identical base
+checkpoint.
+
+The smoke and discovery configs use `adapter_neighborhood`: the adapted block
+plus two blocks on either side, together with five depth sentinels. This keeps
+T4 runtime and disk use tractable while still measuring upstream and
+downstream changes. Confirmatory configs retain `layers: all` and require a
+larger storage/compute budget.
+
 ## Discovery and confirmatory Qwen 27B runs
 
-Before launch, replace all `REQUIRED_*` fields with the exact base/fine-tuned
-model IDs and immutable revisions supplied by the experiment owner. Pilot and
-freeze the Stage 6 first-transition verbalizations; optionally upgrade them to
-multi-token transition likelihoods before locking the confirmatory run.
+The supplied Kaggle configs resolve the base model from the PEFT adapter
+metadata. Pilot and freeze the Stage 6 first-transition verbalizations;
+optionally upgrade them to multi-token transition likelihoods before locking
+the confirmatory run.
 
 Discovery:
 
 ```bash
+python scripts/00_kaggle_preflight.py --config configs/qwen_27b_discovery.json
 python scripts/01_collect_traces.py --config configs/qwen_27b_discovery.json
 python scripts/02_fourier_audit.py --config configs/qwen_27b_discovery.json
 python scripts/03_fit_shared_subspace.py --config configs/qwen_27b_discovery.json
@@ -104,9 +178,11 @@ python scripts/06_run_causal_interventions.py --config configs/qwen_27b_discover
 python scripts/07_analyze_results.py --config configs/qwen_27b_discovery.json
 ```
 
-Confirmatory uses the same commands with
-`configs/qwen_27b_confirmatory.json`, once the pre-registration, estimator,
-layers, scoring rules, and sample sizes are locked.
+This is the LoRA condition. Repeat with
+`configs/qwen_27b_base_discovery.json` for the adapter-disabled base condition.
+Confirmatory uses `qwen_27b_confirmatory.json` and
+`qwen_27b_base_confirmatory.json` once the pre-registration, estimator, layers,
+scoring rules, and sample sizes are locked.
 
 Run base, fine-tuned, and unrelated-family models into separate output roots.
 Never pool their basis calibration. Compare them only after within-model frozen

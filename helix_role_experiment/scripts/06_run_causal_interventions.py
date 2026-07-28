@@ -15,7 +15,6 @@ from helix_role_experiment.config import (
 )
 from helix_role_experiment.controlled_tasks import generate_suite
 from helix_role_experiment.eos_controls import (
-    eos_logit_direction,
     orthogonalize_to_direction,
     subspace_direction_overlap,
 )
@@ -27,7 +26,10 @@ from helix_role_experiment.interventions import (
     radial_intervention,
     within_plane_rotation,
 )
-from helix_role_experiment.models import HuggingFaceTraceCollector, SyntheticActivationBackend
+from helix_role_experiment.models import (
+    SyntheticActivationBackend,
+    huggingface_collector_from_config,
+)
 from helix_role_experiment.subspaces import random_plane
 
 
@@ -83,24 +85,24 @@ def run_huggingface(
             int(config["study"]["seed"]),
         )
     }
-    backend = HuggingFaceTraceCollector(
-        model_id=config["model"]["id"],
-        revision=config["model"].get("revision"),
-        tokenizer_revision=config["model"].get("tokenizer_revision"),
-        device=config["model"].get("device", "auto"),
-        dtype=config["model"].get("dtype", "auto"),
-        trust_remote_code=bool(config["model"].get("trust_remote_code", False)),
+    backend = huggingface_collector_from_config(
+        config["model"], config["collection"]
     )
     with (paths["models"] / "subspace_index.json").open("r", encoding="utf-8") as handle:
         subspace_index = json.load(handle)
-    output_weight = (
-        backend.model.get_output_embeddings().weight.detach().cpu().float().numpy()
-    )
     eos_ids = backend.model.generation_config.eos_token_id
     if eos_ids is None:
         eos_ids = backend.tokenizer.eos_token_id
     eos_id = int(eos_ids if isinstance(eos_ids, int) else eos_ids[0])
-    eos_direction = eos_logit_direction(output_weight, eos_id)
+    eos_direction = (
+        backend.model.get_output_embeddings()
+        .weight[eos_id]
+        .detach()
+        .cpu()
+        .float()
+        .numpy()
+    )
+    eos_direction /= max(float(np.linalg.norm(eos_direction)), 1e-12)
     by_family_layer: dict[tuple[str, int], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
         by_family_layer[(row["family"], int(row["layer"]))].append(row)

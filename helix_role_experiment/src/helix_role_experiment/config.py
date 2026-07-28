@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import random
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -55,12 +56,32 @@ def seed_everything(seed: int) -> np.random.Generator:
 
 def environment_record(config: dict[str, Any]) -> dict[str, Any]:
     packages: dict[str, str | None] = {}
-    for name in ("numpy", "pandas", "scipy", "sklearn", "torch", "transformers"):
+    for name in (
+        "numpy",
+        "pandas",
+        "scipy",
+        "sklearn",
+        "torch",
+        "transformers",
+        "peft",
+        "bitsandbytes",
+        "accelerate",
+    ):
         try:
             module = __import__(name)
             packages[name] = getattr(module, "__version__", "unknown")
         except ImportError:
             packages[name] = None
+    try:
+        repository_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(config["_config_path"]).parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        repository_commit = None
     return {
         "schema_version": SCHEMA_VERSION,
         "config_hash": config_hash(config),
@@ -68,6 +89,7 @@ def environment_record(config: dict[str, Any]) -> dict[str, Any]:
         "platform": platform.platform(),
         "packages": packages,
         "pid": os.getpid(),
+        "repository_commit": repository_commit,
     }
 
 
@@ -112,4 +134,3 @@ def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"invalid JSONL at {path}:{line_number}") from exc
     return rows
-

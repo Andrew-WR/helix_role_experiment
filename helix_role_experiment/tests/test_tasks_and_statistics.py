@@ -66,7 +66,33 @@ class TaskAndStatisticsTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             np.testing.assert_allclose(store.load_activations(rows[0]), array)
 
+    def test_trace_store_preserves_compact_float16_shards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = TraceStore(directory)
+            record = TraceRecord(
+                request_id="half",
+                problem_id="p-half",
+                task_family="test",
+                condition="normal",
+                split="test",
+                layer=3,
+                prompt_token_count=2,
+                token_ids=list(range(8)),
+                tokens=[],
+                activation_file="",
+                generated_token_count=8,
+                reached_eos=True,
+                truncated=False,
+                model_id="toy",
+                model_revision=None,
+                tokenizer_revision=None,
+                seed=0,
+            )
+            array = np.arange(40, dtype=np.float16).reshape(8, 5)
+            store.write(record, array)
+            with np.load(Path(directory) / "half.npz", allow_pickle=False) as shard:
+                self.assertEqual(shard["activations"].dtype, np.float16)
+
 
 if __name__ == "__main__":
     unittest.main()
-

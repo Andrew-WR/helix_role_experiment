@@ -10,7 +10,7 @@
     "revision": "main",
     "tokenizer_revision": "main",
     "device": "auto",
-    "dtype": "bfloat16",
+    "dtype": "float16",
     "trust_remote_code": false
   },
   "tasks": {

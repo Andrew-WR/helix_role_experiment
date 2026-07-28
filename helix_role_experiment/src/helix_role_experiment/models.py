@@ -6,7 +6,13 @@ from typing import Any, Callable
 import numpy as np
 
 from .config import deterministic_id
-from .hooks import discover_decoder_layers, hidden_from_output, registered_hooks, replace_hidden
+from .hooks import (
+    discover_decoder_layers,
+    hidden_from_output,
+    infer_adapter_target_layers,
+    registered_hooks,
+    replace_hidden,
+)
 from .subspaces import orthonormalize
 
 
@@ -132,38 +138,116 @@ class HuggingFaceTraceCollector:
         device: str = "auto",
         dtype: str = "auto",
         trust_remote_code: bool = False,
+        adapter_path: str | None = None,
+        adapter_enabled: bool = True,
+        load_in_4bit: bool = False,
+        bnb_4bit_quant_type: str = "nf4",
+        bnb_4bit_use_double_quant: bool = True,
+        bnb_4bit_compute_dtype: str = "float16",
+        max_memory: dict[str | int, str] | None = None,
+        attn_implementation: str | None = None,
+        low_cpu_mem_usage: bool = True,
+        activation_dtype: str = "float16",
     ):
         try:
             import torch
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from transformers import (
+                AutoModelForCausalLM,
+                AutoTokenizer,
+                BitsAndBytesConfig,
+            )
         except ImportError as exc:
             raise RuntimeError(
                 "Hugging Face collection requires the `model` extra: "
                 "pip install -e '.[model]'"
             ) from exc
         self.torch = torch
-        self.model_id = model_id
+        self.adapter_path = adapter_path
+        self.adapter_enabled = bool(adapter_path and adapter_enabled)
+        self.adapter_target_layers: list[int] = []
+        peft_config = None
+        if adapter_path:
+            try:
+                from peft import PeftConfig, PeftModel
+            except ImportError as exc:
+                raise RuntimeError(
+                    "adapter_path requires PEFT: pip install peft"
+                ) from exc
+            peft_config = PeftConfig.from_pretrained(adapter_path)
+            self.adapter_target_layers = infer_adapter_target_layers(
+                peft_config, adapter_path
+            )
+            if model_id in ("auto_from_adapter", "", None) or str(model_id).startswith(
+                "REQUIRED_"
+            ):
+                model_id = peft_config.base_model_name_or_path
+            if not model_id:
+                raise ValueError(
+                    "adapter_config.json does not identify base_model_name_or_path; "
+                    "set model.id explicitly"
+                )
+        if not model_id or str(model_id).startswith("REQUIRED_"):
+            raise ValueError(
+                "model.id is still a placeholder. Set a Hugging Face repo/local "
+                "path, or use 'auto_from_adapter' with adapter_path."
+            )
+        if revision and str(revision).startswith("REQUIRED_"):
+            raise ValueError(
+                "model.revision is still a placeholder; use an immutable commit, "
+                "'main', or null"
+            )
+        self.model_id = str(model_id)
         self.revision = revision
         self.tokenizer_revision = tokenizer_revision or revision
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_id,
+            self.model_id,
             revision=self.tokenizer_revision,
             trust_remote_code=trust_remote_code,
         )
         kwargs: dict[str, Any] = {
             "revision": revision,
             "trust_remote_code": trust_remote_code,
+            "low_cpu_mem_usage": low_cpu_mem_usage,
         }
         if device == "auto":
             kwargs["device_map"] = "auto"
         if dtype != "auto":
             kwargs["torch_dtype"] = getattr(torch, dtype)
-        self.model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
+        if max_memory:
+            kwargs["max_memory"] = {
+                int(key) if str(key).isdigit() else key: value
+                for key, value in max_memory.items()
+            }
+        if attn_implementation:
+            kwargs["attn_implementation"] = attn_implementation
+        if load_in_4bit:
+            if not torch.cuda.is_available():
+                raise RuntimeError("4-bit bitsandbytes loading requires CUDA")
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type=bnb_4bit_quant_type,
+                bnb_4bit_use_double_quant=bnb_4bit_use_double_quant,
+                bnb_4bit_compute_dtype=getattr(torch, bnb_4bit_compute_dtype),
+            )
+        base_model = AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
+        if self.adapter_enabled:
+            self.model = PeftModel.from_pretrained(
+                base_model,
+                adapter_path,
+                is_trainable=False,
+            )
+        else:
+            self.model = base_model
         if device != "auto":
             self.model.to(device)
         self.model.eval()
         self.layers = discover_decoder_layers(self.model)
-        self.input_device = next(self.model.parameters()).device
+        self.input_device = self.model.get_input_embeddings().weight.device
+        if activation_dtype not in ("float16", "float32"):
+            raise ValueError("activation_dtype must be float16 or float32")
+        self.activation_dtype = activation_dtype
+        self.capture_torch_dtype = getattr(torch, activation_dtype)
+        self.capture_numpy_dtype = getattr(np, activation_dtype)
 
     def format_prompt(self, prompt: str) -> str:
         if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template:
@@ -208,13 +292,17 @@ class HuggingFaceTraceCollector:
                     hidden[:, -1, :] = changed
                     last = changed
                     output = replace_hidden(output, hidden)
-                captured[layer_index].append(last.detach().cpu().float().numpy()[0])
+                captured[layer_index].append(
+                    last.detach()
+                    .to(dtype=self.capture_torch_dtype)
+                    .cpu()
+                    .numpy()[0]
+                )
                 return output
 
             return hook
 
-        generator = torch.Generator(device=self.input_device)
-        generator.manual_seed(seed)
+        generator = None
         eos_ids = self.model.generation_config.eos_token_id
         if eos_ids is None:
             eos_ids = self.tokenizer.eos_token_id
@@ -241,13 +329,16 @@ class HuggingFaceTraceCollector:
                     eos_logits.append(float("nan"))
                 if temperature > 0:
                     probabilities = torch.softmax(logits / temperature, dim=-1)
+                    if generator is None:
+                        generator = torch.Generator(device=probabilities.device)
+                        generator.manual_seed(seed)
                     next_token = torch.multinomial(probabilities, 1, generator=generator)
                 else:
                     next_token = logits.argmax(dim=-1, keepdim=True)
                 token = int(next_token.item())
                 generated.append(token)
                 past = output.past_key_values
-                current_ids = next_token
+                current_ids = next_token.to(self.input_device)
                 current_mask = torch.cat(
                     (
                         current_mask,
@@ -260,7 +351,7 @@ class HuggingFaceTraceCollector:
                     break
         count = len(generated)
         arrays = {
-            layer: np.asarray(values[:count], dtype=np.float32)
+            layer: np.asarray(values[:count], dtype=self.capture_numpy_dtype)
             for layer, values in captured.items()
         }
         for layer, array in arrays.items():
@@ -362,3 +453,33 @@ class HuggingFaceTraceCollector:
             ),
             "fixed_continuation_budget": 1,
         }
+
+
+def huggingface_collector_from_config(
+    model_config: dict[str, Any],
+    collection_config: dict[str, Any] | None = None,
+) -> HuggingFaceTraceCollector:
+    quantization = model_config.get("quantization") or {}
+    collection = collection_config or {}
+    return HuggingFaceTraceCollector(
+        model_id=model_config.get("id"),
+        revision=model_config.get("revision"),
+        tokenizer_revision=model_config.get("tokenizer_revision"),
+        device=model_config.get("device", "auto"),
+        dtype=model_config.get("dtype", "auto"),
+        trust_remote_code=bool(model_config.get("trust_remote_code", False)),
+        adapter_path=model_config.get("adapter_path"),
+        adapter_enabled=bool(model_config.get("adapter_enabled", True)),
+        load_in_4bit=bool(quantization.get("load_in_4bit", False)),
+        bnb_4bit_quant_type=quantization.get("bnb_4bit_quant_type", "nf4"),
+        bnb_4bit_use_double_quant=bool(
+            quantization.get("bnb_4bit_use_double_quant", True)
+        ),
+        bnb_4bit_compute_dtype=quantization.get(
+            "bnb_4bit_compute_dtype", "float16"
+        ),
+        max_memory=model_config.get("max_memory"),
+        attn_implementation=model_config.get("attn_implementation"),
+        low_cpu_mem_usage=bool(model_config.get("low_cpu_mem_usage", True)),
+        activation_dtype=collection.get("activation_dtype", "float16"),
+    )

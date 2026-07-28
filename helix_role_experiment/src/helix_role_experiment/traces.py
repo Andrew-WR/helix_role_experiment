@@ -98,7 +98,7 @@ class TraceStore:
             return record
         temporary = shard.with_suffix(".npz.tmp")
         with temporary.open("wb") as handle:
-            np.savez_compressed(handle, activations=array.astype(np.float32, copy=False))
+            np.savez_compressed(handle, activations=array)
         temporary.replace(shard)
         record.activation_file = shard.name
         existing = {row["request_id"] for row in self.read_manifest()} if self.manifest_path.exists() else set()
@@ -130,4 +130,3 @@ class TraceStore:
     def iter_traces(self) -> Iterable[tuple[dict[str, Any], np.ndarray]]:
         for row in self.read_manifest():
             yield row, self.load_activations(row)
-

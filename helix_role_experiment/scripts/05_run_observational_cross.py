@@ -12,7 +12,10 @@ from helix_role_experiment.config import (
     load_config,
     read_jsonl,
 )
-from helix_role_experiment.models import HuggingFaceTraceCollector, SyntheticActivationBackend
+from helix_role_experiment.models import (
+    SyntheticActivationBackend,
+    huggingface_collector_from_config,
+)
 from helix_role_experiment.subspaces import projected_features
 
 
@@ -71,13 +74,8 @@ def main() -> None:
             noise=float(config["model"]["synthetic_noise"]),
         )
     else:
-        backend = HuggingFaceTraceCollector(
-            model_id=config["model"]["id"],
-            revision=config["model"].get("revision"),
-            tokenizer_revision=config["model"].get("tokenizer_revision"),
-            device=config["model"].get("device", "auto"),
-            dtype=config["model"].get("dtype", "auto"),
-            trust_remote_code=bool(config["model"].get("trust_remote_code", False)),
+        backend = huggingface_collector_from_config(
+            config["model"], config["collection"]
         )
     output_rows = []
     activation_rows = []
@@ -152,9 +150,14 @@ def main() -> None:
             activation_ids.append(row["variant_id"])
             activation_layers.append(layer)
     write_csv(paths["tables"] / "observational_cross.csv", output_rows)
+    activation_storage_dtype = (
+        np.float16
+        if config["collection"].get("activation_dtype", "float32") == "float16"
+        else np.float32
+    )
     np.savez_compressed(
         paths["tables"] / "counterfactual_activations.npz",
-        activations=np.asarray(activation_rows, dtype=np.float32),
+        activations=np.asarray(activation_rows, dtype=activation_storage_dtype),
         variant_ids=np.asarray(activation_ids),
         layers=np.asarray(activation_layers, dtype=int),
     )
@@ -163,4 +166,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

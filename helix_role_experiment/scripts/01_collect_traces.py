@@ -10,6 +10,7 @@ import numpy as np
 from _common import write_csv
 from helix_role_experiment.config import (
     atomic_json,
+    config_hash,
     deterministic_id,
     ensure_output_dirs,
     environment_record,
@@ -18,7 +19,11 @@ from helix_role_experiment.config import (
     write_jsonl,
 )
 from helix_role_experiment.controlled_tasks import generate_suite
-from helix_role_experiment.models import HuggingFaceTraceCollector, SyntheticActivationBackend
+from helix_role_experiment.hooks import select_layer_indices
+from helix_role_experiment.models import (
+    SyntheticActivationBackend,
+    huggingface_collector_from_config,
+)
 from helix_role_experiment.natural_tasks import load_natural_tasks
 from helix_role_experiment.traces import TraceRecord, TraceStore, split_for_problem
 
@@ -55,7 +60,21 @@ def main() -> None:
     paths = ensure_output_dirs(config)
     seed = int(config["study"]["seed"])
     seed_everything(seed)
-    atomic_json(paths["root"] / "environment.json", environment_record(config))
+    environment_path = paths["root"] / "environment.json"
+    current_environment = environment_record(config)
+    if environment_path.exists():
+        import json
+
+        previous_environment = json.loads(
+            environment_path.read_text(encoding="utf-8")
+        )
+        if previous_environment.get("config_hash") != current_environment["config_hash"]:
+            raise RuntimeError(
+                f"{paths['root']} already contains a different config hash "
+                f"({previous_environment.get('config_hash')}); choose a new "
+                "output.root rather than mixing experiments"
+            )
+    atomic_json(environment_path, current_environment)
     problems = generate_suite(int(config["tasks"]["problems_per_family"]), seed)
     natural_path = config["tasks"].get("natural_jsonl")
     if natural_path:
@@ -94,23 +113,28 @@ def main() -> None:
         )
         layer_indices = list(range(backend.layers))
     elif backend_name == "huggingface":
-        backend = HuggingFaceTraceCollector(
-            model_id=config["model"]["id"],
-            revision=config["model"].get("revision"),
-            tokenizer_revision=config["model"].get("tokenizer_revision"),
-            device=config["model"].get("device", "auto"),
-            dtype=config["model"].get("dtype", "auto"),
-            trust_remote_code=bool(config["model"].get("trust_remote_code", False)),
+        backend = huggingface_collector_from_config(
+            config["model"], config["collection"]
         )
         configured = config["collection"]["layers"]
-        layer_indices = list(range(len(backend.layers))) if configured == "all" else list(configured)
+        layer_indices = select_layer_indices(
+            configured,
+            len(backend.layers),
+            backend.adapter_target_layers,
+        )
+        print(
+            f"Resolved base model {backend.model_id!r}; "
+            f"adapter={'enabled' if backend.adapter_enabled else 'disabled'}; "
+            f"adapter target layers={backend.adapter_target_layers or 'not declared'}; "
+            f"recording layers={layer_indices}"
+        )
     else:
         raise ValueError(f"unknown backend: {backend_name}")
 
     summary = []
     for problem_index, problem in enumerate(problems):
         request_base = deterministic_id(
-            config["_config_path"], seed, problem.problem_id, "normal"
+            config_hash(config), seed, problem.problem_id, "normal"
         )
         if backend_name == "synthetic":
             length = int(config["collection"]["synthetic_base_length"]) + (
@@ -158,9 +182,21 @@ def main() -> None:
                 generated_token_count=length,
                 reached_eos=generation.reached_eos,
                 truncated=not generation.reached_eos,
-                model_id=config["model"].get("id", "synthetic"),
-                model_revision=config["model"].get("revision"),
-                tokenizer_revision=config["model"].get("tokenizer_revision"),
+                model_id=(
+                    backend.model_id
+                    if backend_name == "huggingface"
+                    else config["model"].get("id", "synthetic")
+                ),
+                model_revision=(
+                    backend.revision
+                    if backend_name == "huggingface"
+                    else config["model"].get("revision")
+                ),
+                tokenizer_revision=(
+                    backend.tokenizer_revision
+                    if backend_name == "huggingface"
+                    else config["model"].get("tokenizer_revision")
+                ),
                 seed=seed + problem_index,
                 state_ids=labels["state_ids"],
                 structural_progress=labels["progress"].tolist(),
@@ -171,6 +207,24 @@ def main() -> None:
                 termination_allowed=labels["termination_allowed"].tolist(),
                 metadata={
                     "backend": backend_name,
+                    "adapter_path": (
+                        backend.adapter_path
+                        if backend_name == "huggingface"
+                        else None
+                    ),
+                    "adapter_enabled": (
+                        backend.adapter_enabled
+                        if backend_name == "huggingface"
+                        else False
+                    ),
+                    "adapter_target_layers": (
+                        backend.adapter_target_layers
+                        if backend_name == "huggingface"
+                        else []
+                    ),
+                    "activation_dtype": str(
+                        generation.activations_by_layer[layer].dtype
+                    ),
                     "hook_alignment": "activation_used_to_predict_aligned_generated_token",
                 },
             )

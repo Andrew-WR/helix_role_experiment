@@ -1,31 +1,46 @@
 {
   "study": {
-    "name": "qwen_27b_helix_role_discovery",
+    "name": "qwen_27b_lora_kaggle_discovery",
     "seed": 202601,
     "stage": 2
   },
   "model": {
     "backend": "huggingface",
-    "id": "REQUIRED_BASE_QWEN_27B_MODEL_ID",
-    "revision": "REQUIRED_IMMUTABLE_REVISION",
-    "tokenizer_revision": "REQUIRED_IMMUTABLE_REVISION",
+    "id": "auto_from_adapter",
+    "revision": null,
+    "tokenizer_revision": null,
     "device": "auto",
-    "dtype": "bfloat16",
-    "trust_remote_code": false
+    "dtype": "float16",
+    "trust_remote_code": false,
+    "adapter_path": "/kaggle/input/models/andrewwafik/turbo-qwen-27b/pytorch/human_eval_200/1",
+    "adapter_enabled": true,
+    "low_cpu_mem_usage": true,
+    "attn_implementation": "sdpa",
+    "max_memory": {
+      "0": "15GiB",
+      "1": "15GiB",
+      "cpu": "24GiB"
+    },
+    "quantization": {
+      "load_in_4bit": true,
+      "bnb_4bit_quant_type": "nf4",
+      "bnb_4bit_use_double_quant": true,
+      "bnb_4bit_compute_dtype": "float16"
+    }
   },
   "tasks": {
     "problems_per_family": 50,
     "natural_jsonl": null
   },
   "collection": {
-    "layers": "all",
-    "max_new_tokens": 1024,
+    "layers": "adapter_neighborhood",
+    "max_new_tokens": 512,
     "temperature": 0.6,
     "synthetic_base_length": 64,
     "synthetic_length_jitter": 128,
     "observational_probe_tokens": 1,
     "continuations_per_condition": 5,
-    "batch_size": 8,
+    "batch_size": 1,
     "activation_dtype": "float16",
     "resumable_shard_size": 32
   },
@@ -60,6 +75,6 @@
     "ridge": 0.001
   },
   "output": {
-    "root": "/kaggle/working/helix_role_discovery"
+    "root": "/kaggle/working/qwen27b_lora_discovery"
   }
 }

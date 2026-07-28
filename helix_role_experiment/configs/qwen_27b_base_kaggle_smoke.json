@@ -1,9 +1,8 @@
 {
   "study": {
-    "name": "qwen_27b_helix_role_confirmatory",
-    "seed": 202602,
-    "stage": 3,
-    "locked_preregistration": "docs/PREREGISTRATION.md"
+    "name": "qwen_27b_base_kaggle_smoke",
+    "seed": 1729,
+    "stage": 1
   },
   "model": {
     "backend": "huggingface",
@@ -14,7 +13,7 @@
     "dtype": "float16",
     "trust_remote_code": false,
     "adapter_path": "/kaggle/input/models/andrewwafik/turbo-qwen-27b/pytorch/human_eval_200/1",
-    "adapter_enabled": true,
+    "adapter_enabled": false,
     "low_cpu_mem_usage": true,
     "attn_implementation": "sdpa",
     "max_memory": {
@@ -30,55 +29,52 @@
     }
   },
   "tasks": {
-    "problems_per_family": 300,
-    "hold_out_templates": true,
-    "hold_out_family": true,
+    "problems_per_family": 2,
     "natural_jsonl": null
   },
   "collection": {
-    "layers": "all",
-    "max_new_tokens": 1536,
-    "temperature": 0.6,
-    "synthetic_base_length": 64,
-    "synthetic_length_jitter": 128,
+    "layers": "adapter_neighborhood",
+    "max_new_tokens": 128,
+    "temperature": 0.0,
+    "synthetic_base_length": 28,
+    "synthetic_length_jitter": 17,
     "observational_probe_tokens": 1,
-    "continuations_per_condition": 12,
+    "continuations_per_condition": 1,
     "batch_size": 1,
     "activation_dtype": "float16",
-    "resumable_shard_size": 32
+    "resumable_shard_size": 8
   },
   "audit": {
-    "null_draws": 200
+    "null_draws": 4
   },
   "subspace": {
-    "ridge_grid": [0.000001, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1.0],
-    "random_plane_draws": 500,
+    "ridge_grid": [0.0001, 0.001, 0.01, 0.1],
+    "random_plane_draws": 8,
     "iterative_dimension_threshold": 512,
     "cg_tolerance": 1e-5,
-    "cg_max_iterations": 300
+    "cg_max_iterations": 100
   },
   "counterfactuals": {
-    "position_reference_tokens": 3072,
-    "max_prefix_proxy_tokens": 1536,
+    "position_reference_tokens": 512,
+    "max_prefix_proxy_tokens": 128,
     "token_match_tolerance": 4,
     "perplexity_match_tolerance": 0.25
   },
   "interventions": {
-    "max_pairs_per_family_layer": 300,
-    "rotation_deltas": [-1.5707963268, -0.7853981634, -0.3926990817, 0.3926990817, 0.7853981634, 1.5707963268],
-    "continuations_per_condition": 12,
-    "fixed_continuation_tokens": 192,
+    "max_pairs_per_family_layer": 4,
+    "rotation_deltas": [-0.3926990817, 0.3926990817],
+    "continuations_per_condition": 1,
+    "fixed_continuation_tokens": 32,
     "eos_logit_tolerance": 0.1
   },
   "analysis": {
     "minimum_trace_length": 8,
     "radius_quantile": 0.1,
-    "bootstrap_draws": 10000,
-    "cv_folds": 5,
-    "ridge": 0.001,
-    "holm_primary_outcomes": 3
+    "bootstrap_draws": 200,
+    "cv_folds": 3,
+    "ridge": 0.001
   },
   "output": {
-    "root": "/kaggle/working/qwen27b_lora_confirmatory"
+    "root": "/kaggle/working/qwen27b_base_smoke"
   }
 }

@@ -1,6 +1,6 @@
 {
   "study": {
-    "name": "qwen_27b_helix_role_confirmatory",
+    "name": "qwen_27b_base_confirmatory",
     "seed": 202602,
     "stage": 3,
     "locked_preregistration": "docs/PREREGISTRATION.md"
@@ -14,7 +14,7 @@
     "dtype": "float16",
     "trust_remote_code": false,
     "adapter_path": "/kaggle/input/models/andrewwafik/turbo-qwen-27b/pytorch/human_eval_200/1",
-    "adapter_enabled": true,
+    "adapter_enabled": false,
     "low_cpu_mem_usage": true,
     "attn_implementation": "sdpa",
     "max_memory": {
@@ -45,7 +45,7 @@
     "continuations_per_condition": 12,
     "batch_size": 1,
     "activation_dtype": "float16",
-    "resumable_shard_size": 32
+    "resumable_shard_size": 16
   },
   "audit": {
     "null_draws": 200
@@ -79,6 +79,6 @@
     "holm_primary_outcomes": 3
   },
   "output": {
-    "root": "/kaggle/working/qwen27b_lora_confirmatory"
+    "root": "/kaggle/working/qwen27b_base_confirmatory"
   }
 }

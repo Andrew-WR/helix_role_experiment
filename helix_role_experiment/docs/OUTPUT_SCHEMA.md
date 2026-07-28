@@ -32,6 +32,11 @@ One row per problem, condition, and recorded layer.
 | `termination_allowed` | bool array | Instruction-level EOS affordance |
 | `exclusion_reason` | nullable string | Pre-specified exclusion |
 
+Trace `metadata` additionally records adapter path/enabled status, inferred
+adapter target layers, activation storage dtype, backend, and hook alignment.
+Kaggle Qwen traces are captured and stored as float16; analysis promotes them
+to float64 after loading.
+
 Each trace NPZ contains `activations: float32[tokens, hidden]`.
 
 ## Audit tables
