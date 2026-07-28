@@ -1,0 +1,3 @@
+{"problem_id":"cmp-1","text":"Calculate 2+2=4. Check the result. Final answer is 4.","correct":true,"token_count":12}
+{"problem_id":"cmp-2","text":"Calculate the value. Correction: the answer is 7. Verify it.","correct":true,"token_count":13}
+{"problem_id":"cmp-3","text":"Calculate the register update. Final answer is 3.","correct":true,"token_count":10}

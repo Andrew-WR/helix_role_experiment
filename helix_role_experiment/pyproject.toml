@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "helix-role-experiment"
+version = "0.1.0"
+description = "Causal audit of a candidate low-frequency activation subspace"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+analysis = ["pandas>=2", "pyarrow>=14", "matplotlib>=3.8", "scipy>=1.10", "statsmodels>=0.14"]
+model = ["torch>=2.2", "transformers>=4.45", "accelerate>=0.30", "safetensors>=0.4"]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

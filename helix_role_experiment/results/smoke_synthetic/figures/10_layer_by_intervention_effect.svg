@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="620" viewBox="0 0 760 620">
+<style>text{font-family:Arial,sans-serif;fill:#222}.axis{stroke:#555;stroke-width:1}.grid{stroke:#ddd;stroke-width:1}.legend{font-size:12px}.title{font-size:18px;font-weight:600}</style>
+<rect width="100%" height="100%" fill="white"/>
+<text x="380.0" y="25" text-anchor="middle" class="title">Layer-by-intervention progress-shift proxy</text>
+<text x="122" y="137.31" text-anchor="end" class="legend">0</text>
+<rect x="130.00" y="65.00" width="59.00" height="111.25" fill="rgb(149,208,240)"/>
+<text x="159.50" y="133.97" text-anchor="middle" class="legend">0.13</text>
+<rect x="189.00" y="65.00" width="59.00" height="111.25" fill="rgb(123,197,237)"/>
+<text x="218.50" y="133.97" text-anchor="middle" class="legend">0.20</text>
+<rect x="248.00" y="65.00" width="59.00" height="111.25" fill="rgb(116,195,236)"/>
+<text x="277.50" y="133.97" text-anchor="middle" class="legend">0.21</text>
+<rect x="307.00" y="65.00" width="59.00" height="111.25" fill="rgb(199,229,246)"/>
+<text x="336.50" y="133.97" text-anchor="middle" class="legend">-0.00</text>
+<rect x="366.00" y="65.00" width="59.00" height="111.25" fill="rgb(214,235,248)"/>
+<text x="395.50" y="133.97" text-anchor="middle" class="legend">-0.04</text>
+<rect x="425.00" y="65.00" width="59.00" height="111.25" fill="rgb(231,242,250)"/>
+<text x="454.50" y="133.97" text-anchor="middle" class="legend">-0.09</text>
+<rect x="484.00" y="65.00" width="59.00" height="111.25" fill="rgb(182,222,244)"/>
+<text x="513.50" y="133.97" text-anchor="middle" class="legend">0.04</text>
+<rect x="543.00" y="65.00" width="59.00" height="111.25" fill="rgb(167,215,242)"/>
+<text x="572.50" y="133.97" text-anchor="middle" class="legend">0.08</text>
+<rect x="602.00" y="65.00" width="59.00" height="111.25" fill="rgb(196,227,246)"/>
+<text x="631.50" y="133.97" text-anchor="middle" class="legend">0.00</text>
+<rect x="661.00" y="65.00" width="59.00" height="111.25" fill="rgb(193,226,245)"/>
+<text x="690.50" y="133.97" text-anchor="middle" class="legend">0.01</text>
+<text x="122" y="248.56" text-anchor="end" class="legend">1</text>
+<rect x="130.00" y="176.25" width="59.00" height="111.25" fill="rgb(102,189,235)"/>
+<text x="159.50" y="245.23" text-anchor="middle" class="legend">0.25</text>
+<rect x="189.00" y="176.25" width="59.00" height="111.25" fill="rgb(161,213,242)"/>
+<text x="218.50" y="245.23" text-anchor="middle" class="legend">0.10</text>
+<rect x="248.00" y="176.25" width="59.00" height="111.25" fill="rgb(155,211,241)"/>
+<text x="277.50" y="245.23" text-anchor="middle" class="legend">0.11</text>
+<rect x="307.00" y="176.25" width="59.00" height="111.25" fill="rgb(201,230,246)"/>
+<text x="336.50" y="245.23" text-anchor="middle" class="legend">-0.01</text>
+<rect x="366.00" y="176.25" width="59.00" height="111.25" fill="rgb(208,233,247)"/>
+<text x="395.50" y="245.23" text-anchor="middle" class="legend">-0.03</text>
+<rect x="425.00" y="176.25" width="59.00" height="111.25" fill="rgb(219,237,249)"/>
+<text x="454.50" y="245.23" text-anchor="middle" class="legend">-0.06</text>
+<rect x="484.00" y="176.25" width="59.00" height="111.25" fill="rgb(187,224,245)"/>
+<text x="513.50" y="245.23" text-anchor="middle" class="legend">0.03</text>
+<rect x="543.00" y="176.25" width="59.00" height="111.25" fill="rgb(179,220,244)"/>
+<text x="572.50" y="245.23" text-anchor="middle" class="legend">0.05</text>
+<rect x="602.00" y="176.25" width="59.00" height="111.25" fill="rgb(196,227,246)"/>
+<text x="631.50" y="245.23" text-anchor="middle" class="legend">0.00</text>
+<rect x="661.00" y="176.25" width="59.00" height="111.25" fill="rgb(195,227,246)"/>
+<text x="690.50" y="245.23" text-anchor="middle" class="legend">0.01</text>
+<text x="122" y="359.81" text-anchor="end" class="legend">2</text>
+<rect x="130.00" y="287.50" width="59.00" height="111.25" fill="rgb(104,190,235)"/>
+<text x="159.50" y="356.48" text-anchor="middle" class="legend">0.25</text>
+<rect x="189.00" y="287.50" width="59.00" height="111.25" fill="rgb(175,219,243)"/>
+<text x="218.50" y="356.48" text-anchor="middle" class="legend">0.06</text>
+<rect x="248.00" y="287.50" width="59.00" height="111.25" fill="rgb(194,227,246)"/>
+<text x="277.50" y="356.48" text-anchor="middle" class="legend">0.01</text>
+<rect x="307.00" y="287.50" width="59.00" height="111.25" fill="rgb(190,225,245)"/>
+<text x="336.50" y="356.48" text-anchor="middle" class="legend">0.02</text>
+<rect x="366.00" y="287.50" width="59.00" height="111.25" fill="rgb(207,232,247)"/>
+<text x="395.50" y="356.48" text-anchor="middle" class="legend">-0.03</text>
+<rect x="425.00" y="287.50" width="59.00" height="111.25" fill="rgb(218,237,248)"/>
+<text x="454.50" y="356.48" text-anchor="middle" class="legend">-0.05</text>
+<rect x="484.00" y="287.50" width="59.00" height="111.25" fill="rgb(189,225,245)"/>
+<text x="513.50" y="356.48" text-anchor="middle" class="legend">0.02</text>
+<rect x="543.00" y="287.50" width="59.00" height="111.25" fill="rgb(181,221,244)"/>
+<text x="572.50" y="356.48" text-anchor="middle" class="legend">0.04</text>
+<rect x="602.00" y="287.50" width="59.00" height="111.25" fill="rgb(196,227,246)"/>
+<text x="631.50" y="356.48" text-anchor="middle" class="legend">0.00</text>
+<rect x="661.00" y="287.50" width="59.00" height="111.25" fill="rgb(195,227,246)"/>
+<text x="690.50" y="356.48" text-anchor="middle" class="legend">0.01</text>
+<text x="122" y="471.06" text-anchor="end" class="legend">3</text>
+<rect x="130.00" y="398.75" width="59.00" height="111.25" fill="rgb(197,228,246)"/>
+<text x="159.50" y="467.73" text-anchor="middle" class="legend">0.00</text>
+<rect x="189.00" y="398.75" width="59.00" height="111.25" fill="rgb(75,178,232)"/>
+<text x="218.50" y="467.73" text-anchor="middle" class="legend">0.32</text>
+<rect x="248.00" y="398.75" width="59.00" height="111.25" fill="rgb(81,180,232)"/>
+<text x="277.50" y="467.73" text-anchor="middle" class="legend">0.31</text>
+<rect x="307.00" y="398.75" width="59.00" height="111.25" fill="rgb(199,229,246)"/>
+<text x="336.50" y="467.73" text-anchor="middle" class="legend">-0.01</text>
+<rect x="366.00" y="398.75" width="59.00" height="111.25" fill="rgb(172,218,243)"/>
+<text x="395.50" y="467.73" text-anchor="middle" class="legend">0.07</text>
+<rect x="425.00" y="398.75" width="59.00" height="111.25" fill="rgb(146,207,240)"/>
+<text x="454.50" y="467.73" text-anchor="middle" class="legend">0.14</text>
+<rect x="484.00" y="398.75" width="59.00" height="111.25" fill="rgb(222,238,249)"/>
+<text x="513.50" y="467.73" text-anchor="middle" class="legend">-0.06</text>
+<rect x="543.00" y="398.75" width="59.00" height="111.25" fill="rgb(245,248,252)"/>
+<text x="572.50" y="467.73" text-anchor="middle" class="legend">-0.12</text>
+<rect x="602.00" y="398.75" width="59.00" height="111.25" fill="rgb(196,228,246)"/>
+<text x="631.50" y="467.73" text-anchor="middle" class="legend">0.00</text>
+<rect x="661.00" y="398.75" width="59.00" height="111.25" fill="rgb(193,226,245)"/>
+<text x="690.50" y="467.73" text-anchor="middle" class="legend">0.01</text>
+<text x="159.50" y="518" transform="rotate(45 159.50 518)" class="legend">candidate_orthogonal_patch</text>
+<text x="218.50" y="518" transform="rotate(45 218.50 518)" class="legend">candidate_transplant</text>
+<text x="277.50" y="518" transform="rotate(45 277.50 518)" class="legend">eos_orthogonal_transplant</text>
+<text x="336.50" y="518" transform="rotate(45 336.50 518)" class="legend">norm_matched_random</text>
+<text x="395.50" y="518" transform="rotate(45 395.50 518)" class="legend">phase_rotation_+0.393</text>
+<text x="454.50" y="518" transform="rotate(45 454.50 518)" class="legend">phase_rotation_+0.785</text>
+<text x="513.50" y="518" transform="rotate(45 513.50 518)" class="legend">phase_rotation_-0.393</text>
+<text x="572.50" y="518" transform="rotate(45 572.50 518)" class="legend">phase_rotation_-0.785</text>
+<text x="631.50" y="518" transform="rotate(45 631.50 518)" class="legend">radial_plus_20pct</text>
+<text x="690.50" y="518" transform="rotate(45 690.50 518)" class="legend">random_plane_transplant</text>
+</svg>

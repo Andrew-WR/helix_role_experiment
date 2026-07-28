@@ -1,0 +1,65 @@
+{
+  "study": {
+    "name": "qwen_27b_helix_role_discovery",
+    "seed": 202601,
+    "stage": 2
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "REQUIRED_BASE_QWEN_27B_MODEL_ID",
+    "revision": "REQUIRED_IMMUTABLE_REVISION",
+    "tokenizer_revision": "REQUIRED_IMMUTABLE_REVISION",
+    "device": "auto",
+    "dtype": "bfloat16",
+    "trust_remote_code": false
+  },
+  "tasks": {
+    "problems_per_family": 50,
+    "natural_jsonl": null
+  },
+  "collection": {
+    "layers": "all",
+    "max_new_tokens": 1024,
+    "temperature": 0.6,
+    "synthetic_base_length": 64,
+    "synthetic_length_jitter": 128,
+    "observational_probe_tokens": 1,
+    "continuations_per_condition": 5,
+    "batch_size": 8,
+    "activation_dtype": "float16",
+    "resumable_shard_size": 32
+  },
+  "audit": {
+    "null_draws": 100
+  },
+  "subspace": {
+    "ridge_grid": [0.000001, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1.0],
+    "random_plane_draws": 200,
+    "iterative_dimension_threshold": 512,
+    "cg_tolerance": 1e-5,
+    "cg_max_iterations": 200
+  },
+  "counterfactuals": {
+    "position_reference_tokens": 2048,
+    "max_prefix_proxy_tokens": 1024,
+    "token_match_tolerance": 4,
+    "perplexity_match_tolerance": 0.25
+  },
+  "interventions": {
+    "max_pairs_per_family_layer": 100,
+    "rotation_deltas": [-1.5707963268, -0.7853981634, -0.3926990817, 0.3926990817, 0.7853981634, 1.5707963268],
+    "continuations_per_condition": 5,
+    "fixed_continuation_tokens": 128,
+    "eos_logit_tolerance": 0.1
+  },
+  "analysis": {
+    "minimum_trace_length": 8,
+    "radius_quantile": 0.1,
+    "bootstrap_draws": 5000,
+    "cv_folds": 5,
+    "ridge": 0.001
+  },
+  "output": {
+    "root": "/kaggle/working/helix_role_discovery"
+  }
+}

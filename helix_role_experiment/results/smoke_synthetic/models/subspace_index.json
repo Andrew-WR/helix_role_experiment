@@ -1,0 +1,83 @@
+{
+  "estimators": [
+    {
+      "layer": 0,
+      "name": "grassmann",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_0_grassmann.npz",
+      "validation_selectivity": 12.134919664945778
+    },
+    {
+      "layer": 0,
+      "name": "generalized_eigen",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_0_generalized_eigen.npz",
+      "validation_selectivity": 12.526255714828618
+    },
+    {
+      "layer": 0,
+      "name": "complex_svd",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_0_complex_svd.npz",
+      "validation_selectivity": 12.13459006628451
+    },
+    {
+      "layer": 1,
+      "name": "grassmann",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_1_grassmann.npz",
+      "validation_selectivity": 15.299454946371965
+    },
+    {
+      "layer": 1,
+      "name": "generalized_eigen",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_1_generalized_eigen.npz",
+      "validation_selectivity": 17.353832639848125
+    },
+    {
+      "layer": 1,
+      "name": "complex_svd",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_1_complex_svd.npz",
+      "validation_selectivity": 15.30049014990063
+    },
+    {
+      "layer": 2,
+      "name": "grassmann",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_2_grassmann.npz",
+      "validation_selectivity": 17.056690683650157
+    },
+    {
+      "layer": 2,
+      "name": "generalized_eigen",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_2_generalized_eigen.npz",
+      "validation_selectivity": 17.834030282478263
+    },
+    {
+      "layer": 2,
+      "name": "complex_svd",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_2_complex_svd.npz",
+      "validation_selectivity": 17.056250959477804
+    },
+    {
+      "layer": 3,
+      "name": "grassmann",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_3_grassmann.npz",
+      "validation_selectivity": 17.932671996080444
+    },
+    {
+      "layer": 3,
+      "name": "generalized_eigen",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_3_generalized_eigen.npz",
+      "validation_selectivity": 16.216555334601445
+    },
+    {
+      "layer": 3,
+      "name": "complex_svd",
+      "path": "results\\smoke_synthetic\\models\\subspace_layer_3_complex_svd.npz",
+      "validation_selectivity": 17.932815307624157
+    }
+  ],
+  "selected_by_layer": {
+    "0": "generalized_eigen",
+    "1": "generalized_eigen",
+    "2": "generalized_eigen",
+    "3": "complex_svd"
+  },
+  "selection_rule": "validation spectral selectivity only"
+}

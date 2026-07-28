@@ -1,0 +1,57 @@
+{
+  "study": {
+    "name": "synthetic_pipeline_validation",
+    "seed": 1729,
+    "stage": 0
+  },
+  "model": {
+    "backend": "synthetic",
+    "id": "known-latent-synthetic-backend",
+    "revision": "1",
+    "tokenizer_revision": "1",
+    "hidden_size": 32,
+    "layers": 4,
+    "synthetic_role": "mixed",
+    "synthetic_noise": 0.06
+  },
+  "tasks": {
+    "problems_per_family": 6,
+    "natural_jsonl": null
+  },
+  "collection": {
+    "layers": "all",
+    "max_new_tokens": 96,
+    "temperature": 0.0,
+    "synthetic_base_length": 28,
+    "synthetic_length_jitter": 17,
+    "observational_probe_tokens": 1
+  },
+  "audit": {
+    "null_draws": 4
+  },
+  "subspace": {
+    "ridge_grid": [0.0001, 0.001, 0.01, 0.1],
+    "random_plane_draws": 8,
+    "iterative_dimension_threshold": 512,
+    "cg_tolerance": 1e-6,
+    "cg_max_iterations": 300
+  },
+  "counterfactuals": {
+    "position_reference_tokens": 256,
+    "max_prefix_proxy_tokens": 96
+  },
+  "interventions": {
+    "max_pairs_per_family_layer": 6,
+    "rotation_deltas": [-0.7853981634, -0.3926990817, 0.3926990817, 0.7853981634]
+  },
+  "analysis": {
+    "minimum_trace_length": 8,
+    "radius_quantile": 0.1,
+    "bootstrap_draws": 400,
+    "cv_folds": 5,
+    "ridge": 0.001
+  },
+  "output": {
+    "root": "results/smoke_synthetic"
+  }
+}

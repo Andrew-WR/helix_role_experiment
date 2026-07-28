@@ -1,0 +1,3 @@
+{"problem_id":"cmp-1","text":"First, plan the calculation. Calculate 2+2=4. Check the result. Final answer is 4.","correct":true,"token_count":19}
+{"problem_id":"cmp-2","text":"We need solve it. Alternatively consider a tangent. Again recompute the value. Correction: the answer is 7. Verify it.","correct":true,"token_count":24}
+{"problem_id":"cmp-3","text":"Let x be the register. Calculate the update. Check the update. In other words, restate it. Final answer is 3.","correct":false,"token_count":23}

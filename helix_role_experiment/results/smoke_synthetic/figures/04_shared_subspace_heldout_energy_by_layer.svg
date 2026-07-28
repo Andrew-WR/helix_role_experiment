@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="520" viewBox="0 0 760 520">
+<style>text{font-family:Arial,sans-serif;fill:#222}.axis{stroke:#555;stroke-width:1}.grid{stroke:#ddd;stroke-width:1}.legend{font-size:12px}.title{font-size:18px;font-weight:600}</style>
+<rect width="100%" height="100%" fill="white"/>
+<text x="380.0" y="25" text-anchor="middle" class="title">Held-out first-harmonic selectivity by layer</text>
+<line x1="70" y1="455" x2="730" y2="455" class="axis"/>
+<line x1="70" y1="50" x2="70" y2="455" class="axis"/>
+<text x="400.0" y="502" text-anchor="middle">layer</text>
+<text x="18" y="252.5" text-anchor="middle" transform="rotate(-90 18 252.5)">k=1 / residual energy</text>
+<circle cx="70.00" cy="454.66" r="3.2" fill="#275dad" fill-opacity="0.65"/>
+<circle cx="290.00" cy="317.68" r="3.2" fill="#275dad" fill-opacity="0.65"/>
+<circle cx="510.00" cy="198.19" r="3.2" fill="#275dad" fill-opacity="0.65"/>
+<circle cx="730.00" cy="50.69" r="3.2" fill="#275dad" fill-opacity="0.65"/>
+<circle cx="595" cy="50" r="4" fill="#275dad"/><text x="605" y="54" class="legend">grassmann</text>
+<circle cx="70.00" cy="455.00" r="3.2" fill="#e07a5f" fill-opacity="0.65"/>
+<circle cx="290.00" cy="339.91" r="3.2" fill="#e07a5f" fill-opacity="0.65"/>
+<circle cx="510.00" cy="50.00" r="3.2" fill="#e07a5f" fill-opacity="0.65"/>
+<circle cx="730.00" cy="164.96" r="3.2" fill="#e07a5f" fill-opacity="0.65"/>
+<circle cx="595" cy="66" r="4" fill="#e07a5f"/><text x="605" y="70" class="legend">generalized_eigen</text>
+<circle cx="70.00" cy="454.74" r="3.2" fill="#3d9970" fill-opacity="0.65"/>
+<circle cx="290.00" cy="317.65" r="3.2" fill="#3d9970" fill-opacity="0.65"/>
+<circle cx="510.00" cy="198.17" r="3.2" fill="#3d9970" fill-opacity="0.65"/>
+<circle cx="730.00" cy="50.69" r="3.2" fill="#3d9970" fill-opacity="0.65"/>
+<circle cx="595" cy="82" r="4" fill="#3d9970"/><text x="605" y="86" class="legend">complex_svd</text>
+</svg>

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="520" viewBox="0 0 760 520">
+<style>text{font-family:Arial,sans-serif;fill:#222}.axis{stroke:#555;stroke-width:1}.grid{stroke:#ddd;stroke-width:1}.legend{font-size:12px}.title{font-size:18px;font-weight:600}</style>
+<rect width="100%" height="100%" fill="white"/>
+<text x="380.0" y="25" text-anchor="middle" class="title">Base versus fine-tuned reasoning-category duration</text>
+<line x1="70" y1="455" x2="730" y2="455" class="axis"/>
+<line x1="70" y1="50" x2="70" y2="455" class="axis"/>
+<text x="400.0" y="502" text-anchor="middle">category index: 0=correction, 1=final_answer_detail, 2=irrelevant_exploration, 3=planning, 4=productive_computation, 5=repeated_computation, 6=rhetorical_restatement, 7=setup, 8=verification</text>
+<text x="18" y="252.5" text-anchor="middle" transform="rotate(-90 18 252.5)">sentence count</text>
+<polyline points="70.00,320.00 152.50,185.00 235.00,320.00 317.50,320.00 400.00,185.00 482.50,320.00 565.00,320.00 647.50,185.00 730.00,50.00" fill="none" stroke="#275dad" stroke-width="2"/>
+<line x1="585" y1="50" x2="600" y2="50" stroke="#275dad" stroke-width="2"/><text x="605" y="54" class="legend">base</text>
+<polyline points="70.00,320.00 152.50,185.00 235.00,455.00 317.50,455.00 400.00,50.00 482.50,455.00 565.00,455.00 647.50,455.00 730.00,185.00" fill="none" stroke="#e07a5f" stroke-width="2"/>
+<line x1="585" y1="66" x2="600" y2="66" stroke="#e07a5f" stroke-width="2"/><text x="605" y="70" class="legend">fine-tuned</text>
+</svg>

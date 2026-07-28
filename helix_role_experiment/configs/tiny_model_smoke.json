@@ -1,0 +1,56 @@
+{
+  "study": {
+    "name": "tiny_qwen_engineering_smoke",
+    "seed": 1729,
+    "stage": 1
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "main",
+    "tokenizer_revision": "main",
+    "device": "auto",
+    "dtype": "bfloat16",
+    "trust_remote_code": false
+  },
+  "tasks": {
+    "problems_per_family": 4,
+    "natural_jsonl": null
+  },
+  "collection": {
+    "layers": "all",
+    "max_new_tokens": 96,
+    "temperature": 0.0,
+    "synthetic_base_length": 28,
+    "synthetic_length_jitter": 17,
+    "observational_probe_tokens": 1
+  },
+  "audit": {
+    "null_draws": 8
+  },
+  "subspace": {
+    "ridge_grid": [0.0001, 0.001, 0.01, 0.1],
+    "random_plane_draws": 20,
+    "iterative_dimension_threshold": 512,
+    "cg_tolerance": 1e-6,
+    "cg_max_iterations": 300
+  },
+  "counterfactuals": {
+    "position_reference_tokens": 512,
+    "max_prefix_proxy_tokens": 160
+  },
+  "interventions": {
+    "max_pairs_per_family_layer": 8,
+    "rotation_deltas": [-0.7853981634, -0.3926990817, 0.3926990817, 0.7853981634]
+  },
+  "analysis": {
+    "minimum_trace_length": 8,
+    "radius_quantile": 0.1,
+    "bootstrap_draws": 1000,
+    "cv_folds": 4,
+    "ridge": 0.001
+  },
+  "output": {
+    "root": "results/tiny_model_smoke"
+  }
+}
