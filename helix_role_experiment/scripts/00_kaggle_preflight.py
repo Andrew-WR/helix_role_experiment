@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -17,6 +18,13 @@ def package_version(name: str) -> str | None:
     except ImportError:
         return None
     return getattr(module, "__version__", "unknown")
+
+
+def numeric_version(version: str | None) -> tuple[int, ...]:
+    if version is None:
+        return ()
+    match = re.match(r"^(\d+(?:\.\d+)*)", version)
+    return tuple(int(part) for part in match.group(1).split(".")) if match else ()
 
 
 def main() -> None:
@@ -55,6 +63,20 @@ def main() -> None:
     if missing:
         raise RuntimeError(
             f"missing packages {missing}; run pip install -e '.[model,analysis]'"
+        )
+    if numeric_version(packages["transformers"]) < (5, 14, 1):
+        raise RuntimeError(
+            "Qwen3.5 requires transformers>=5.14.1 for this experiment, but "
+            f"{packages['transformers']} is installed. From the repository's "
+            "helix_role_experiment directory run "
+            "`python -m pip install -U -e '.[model,analysis]'`, then rerun "
+            "preflight in a fresh Python process."
+        )
+    if numeric_version(packages["peft"]) < (0, 18):
+        raise RuntimeError(
+            "Transformers 5.x adapter integration requires peft>=0.18, but "
+            f"{packages['peft']} is installed. Run "
+            "`python -m pip install -U -e '.[model,analysis]'`."
         )
 
     import torch

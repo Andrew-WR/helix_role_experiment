@@ -100,9 +100,15 @@ git clone --depth 1 \
   https://github.com/Andrew-WR/helix_role_experiment.git \
   helix-role-src
 cd /kaggle/working/helix-role-src/helix_role_experiment
-pip install -q -e '.[model,analysis]'
+python -m pip install -q -U -e '.[model,analysis]'
 git rev-parse HEAD
 ```
+
+Qwen3.5 is not recognized by Kaggle's older preinstalled Transformers build.
+The model extra therefore requires `transformers>=5.14.1,<6` and
+`peft>=0.18`. If either package was already imported in the notebook process,
+restart the Kaggle session after installation; commands launched as a new
+`!python` process will see the upgraded packages directly.
 
 On a restarted session, clone again. During one live session, update with:
 

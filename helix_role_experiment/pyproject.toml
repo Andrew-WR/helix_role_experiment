@@ -13,10 +13,10 @@ dependencies = ["numpy>=1.24"]
 analysis = ["pandas>=2", "pyarrow>=14", "matplotlib>=3.8", "scipy>=1.10", "statsmodels>=0.14"]
 model = [
   "torch>=2.2",
-  "transformers>=4.45",
+  "transformers>=5.14.1,<6",
   "accelerate>=0.30",
   "safetensors>=0.4",
-  "peft>=0.14",
+  "peft>=0.18",
   "bitsandbytes>=0.45"
 ]
 test = ["pytest>=8"]
