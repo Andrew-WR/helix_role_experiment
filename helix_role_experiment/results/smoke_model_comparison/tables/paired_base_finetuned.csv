@@ -1,4 +1,0 @@
-problem_id,base_tokens,tuned_tokens,token_change,base_correct,tuned_correct,accuracy_change,removed_categories
-cmp-1,19,12,-7,1,1,0,"{""planning"": 1}"
-cmp-2,24,13,-11,1,1,0,"{""irrelevant_exploration"": 1, ""repeated_computation"": 1, ""setup"": 1}"
-cmp-3,23,10,-13,0,1,1,"{""productive_computation"": 1, ""rhetorical_restatement"": 1, ""setup"": 1, ""verification"": 1}"
