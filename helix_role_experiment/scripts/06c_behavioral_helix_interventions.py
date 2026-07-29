@@ -32,6 +32,9 @@ from helix_role_experiment.models import huggingface_collector_from_config
 
 
 EPS = 1e-12
+FINAL_LINE_STOP_REGEX = (
+    r"(?im)^\s*\**final(?:\s+answer)?\**\s*:\**\s*\S[^\n]*\n"
+)
 
 
 def load_geometry_module():
@@ -178,6 +181,11 @@ def generated_metrics(
         ),
         "reasoning_tokens_before_final": reasoning_tokens,
         "output_tokens": len(generated.token_ids),
+        "hit_token_cap": int(
+            len(generated.token_ids) >= int(max_new_tokens)
+            and answer is None
+            and not generated.reached_eos
+        ),
         "anchor_sentence_fraction": anchor_sentence_fraction(generated.text),
         "repeated_sentence_fraction": repeated_sentence_fraction(
             generated.text
@@ -288,7 +296,7 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
         ],
         dtype=np.float64,
     )
-    assay_valid = bool(
+    sequence_assay_valid = bool(
         len(assay_differences)
         and np.median(assay_differences) > 0.5
         and np.mean(assay_differences > 0) >= 2.0 / 3.0
@@ -309,7 +317,11 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
                 if len(assay_differences)
                 else float("nan")
             ),
-            "status": "assay_valid" if assay_valid else "assay_invalid",
+            "status": (
+                "assay_valid"
+                if sequence_assay_valid
+                else "assay_invalid"
+            ),
         }
     )
 
@@ -321,6 +333,37 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
 
     def condition(scenario: str, control: str) -> dict:
         return summary_lookup[(scenario, control)]
+
+    baseline_generations = [
+        row for row in rows if row["control"] == "baseline"
+    ]
+    baseline_completion_rate = float(
+        np.mean([row["answer_emitted"] for row in baseline_generations])
+    )
+    baseline_cap_rate = float(
+        np.mean([row["hit_token_cap"] for row in baseline_generations])
+    )
+    generation_assay_valid = bool(
+        baseline_generations
+        and baseline_completion_rate == 1.0
+        and baseline_cap_rate == 0.0
+    )
+    output.append(
+        {
+            "result_type": "primary_gate",
+            "scenario": "all",
+            "control": "baseline",
+            "gate": "generation_assay_reaches_final_answer",
+            "baseline_answer_emission_rate": baseline_completion_rate,
+            "baseline_token_cap_rate": baseline_cap_rate,
+            "status": (
+                "assay_valid"
+                if generation_assay_valid
+                else "assay_invalid"
+            ),
+        }
+    )
+    assay_valid = sequence_assay_valid and generation_assay_valid
 
     acceleration = condition("accelerate", "helix_desired")
     acceleration_comparators = [
@@ -514,9 +557,11 @@ def main() -> None:
         ),
     )
     parser.add_argument("--rollouts", type=int, default=1)
-    parser.add_argument("--max-new-tokens", type=int, default=64)
-    parser.add_argument("--pulse-tokens", type=int, default=8)
-    parser.add_argument("--temperature", type=float, default=0.6)
+    parser.add_argument("--max-new-tokens", type=int, default=512)
+    parser.add_argument("--pulse-tokens", type=int, default=16)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--top-k", type=int, default=20)
     args = parser.parse_args()
     if args.problems_per_family <= 0:
         raise ValueError("--problems-per-family must be positive")
@@ -524,6 +569,10 @@ def main() -> None:
         raise ValueError("--rollouts must be positive")
     if args.max_new_tokens <= 0 or args.pulse_tokens <= 0:
         raise ValueError("token budgets must be positive")
+    if not 0.0 < args.top_p <= 1.0:
+        raise ValueError("--top-p must be in (0, 1]")
+    if args.top_k <= 0:
+        raise ValueError("--top-k must be positive")
 
     geometry_code = load_geometry_module()
     config = load_config(args.config)
@@ -662,6 +711,101 @@ def main() -> None:
     rows_by_problem: dict[str, list[dict]] = defaultdict(list)
     for row in layer_rows:
         rows_by_problem[row["problem_id"]].append(row)
+    baseline_pilots = {}
+    pilot_rows = []
+    for problem_index, problem in enumerate(selected_problems):
+        concise = sorted(
+            [
+                row
+                for row in rows_by_problem[problem.problem_id]
+                if row["condition"] == "concise"
+            ],
+            key=lambda row: float(row["structural_progress"]),
+        )
+        if len(concise) < 3:
+            raise ValueError(
+                f"{problem.problem_id} has too few concise states"
+            )
+        target = min(
+            concise[1:-1],
+            key=lambda row: abs(float(row["structural_progress"]) - 0.5),
+        )
+        incorrect = wrong_answer(problem)
+        for scenario in ("accelerate", "repair_wrong_commitment"):
+            prompt = evaluation_prompt(
+                problem,
+                prefixes[target["variant_id"]]["text"],
+                scenario,
+                incorrect,
+            )
+            seed = (
+                int(config["study"]["seed"])
+                + 1000 * problem_index
+                + 100 * (scenario == "repair_wrong_commitment")
+            )
+            started = time.perf_counter()
+            generated = backend.collect(
+                prompt,
+                [layer],
+                args.max_new_tokens,
+                seed,
+                temperature=args.temperature,
+                disable_eos=False,
+                intervention=None,
+                capture_activations=False,
+                capture_eos_logits=False,
+                stop_regex=FINAL_LINE_STOP_REGEX,
+                top_p=args.top_p,
+                top_k=args.top_k,
+            )
+            metrics = generated_metrics(
+                backend,
+                generated,
+                problem.answer,
+                args.max_new_tokens,
+            )
+            baseline_pilots[(problem.problem_id, scenario)] = generated
+            pilot_rows.append(
+                {
+                    "problem_id": problem.problem_id,
+                    "family": problem.family,
+                    "scenario": scenario,
+                    "seed": seed,
+                    "max_new_tokens": args.max_new_tokens,
+                    "temperature": args.temperature,
+                    "top_p": args.top_p,
+                    "top_k": args.top_k,
+                    **metrics,
+                }
+            )
+            print(
+                f"Baseline viability: {problem.problem_id} {scenario} "
+                f"({len(generated.token_ids)} tokens, "
+                f"{time.perf_counter() - started:.1f}s)",
+                flush=True,
+            )
+    failed_pilots = [
+        row for row in pilot_rows if not int(row["answer_emitted"])
+    ]
+    if failed_pilots:
+        diagnostic_path = (
+            paths["tables"] / "behavioral_helix_baseline_pilot.csv"
+        )
+        write_csv(diagnostic_path, pilot_rows)
+        failed_labels = ", ".join(
+            f"{row['problem_id']}/{row['scenario']}"
+            for row in failed_pilots
+        )
+        raise RuntimeError(
+            "Behavioral assay aborted before interventions: the unmodified "
+            f"baseline did not emit FINAL within {args.max_new_tokens} tokens "
+            f"for {failed_labels}. Increase --max-new-tokens (try 1024). "
+            f"Diagnostics: {diagnostic_path}"
+        )
+    print(
+        "Baseline viability passed for every prompt; starting causal assays.",
+        flush=True,
+    )
     total_generations = (
         len(selected_problems) * 2 * args.rollouts * 6
     )
@@ -840,21 +984,25 @@ def main() -> None:
                             args.pulse_tokens,
                         )
                     )
-                    generated = backend.collect(
-                        prompt,
-                        [layer],
-                        args.max_new_tokens,
-                        seed,
-                        temperature=args.temperature,
-                        disable_eos=False,
-                        intervention=callback,
-                        capture_activations=False,
-                        capture_eos_logits=False,
-                        stop_regex=(
-                            r"(?im)^\s*\**final(?:\s+answer)?"
-                            r"\**\s*:\**\s*\S+"
-                        ),
-                    )
+                    if rollout == 0 and control == "baseline":
+                        generated = baseline_pilots[
+                            (problem.problem_id, scenario)
+                        ]
+                    else:
+                        generated = backend.collect(
+                            prompt,
+                            [layer],
+                            args.max_new_tokens,
+                            seed,
+                            temperature=args.temperature,
+                            disable_eos=False,
+                            intervention=callback,
+                            capture_activations=False,
+                            capture_eos_logits=False,
+                            stop_regex=FINAL_LINE_STOP_REGEX,
+                            top_p=args.top_p,
+                            top_k=args.top_k,
+                        )
                     completed_generations += 1
                     outcomes.append(
                         {
@@ -868,6 +1016,24 @@ def main() -> None:
                             "target_progress": target_progress,
                             "desired_progress": desired_progress,
                             "pulse_tokens": args.pulse_tokens,
+                            "max_new_tokens": args.max_new_tokens,
+                            "temperature": args.temperature,
+                            "top_p": args.top_p,
+                            "top_k": args.top_k,
+                            "chat_template_used": int(
+                                bool(
+                                    getattr(
+                                        backend.tokenizer,
+                                        "chat_template",
+                                        None,
+                                    )
+                                )
+                            ),
+                            "thinking_mode_requested": (
+                                backend.chat_template_kwargs.get(
+                                    "enable_thinking"
+                                )
+                            ),
                             "intervention_norm": (
                                 0.0
                                 if delta is None

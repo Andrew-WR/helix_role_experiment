@@ -169,8 +169,11 @@ python scripts/06c_behavioral_helix_interventions.py \
   --layer 63 \
   --problems-per-family 1 \
   --rollouts 1 \
-  --max-new-tokens 64 \
-  --pulse-tokens 8
+  --max-new-tokens 512 \
+  --pulse-tokens 16 \
+  --temperature 1.0 \
+  --top-p 0.95 \
+  --top-k 20
 python scripts/06_run_causal_interventions.py \
   --config configs/qwen_27b_kaggle_smoke.json
 python scripts/07_analyze_results.py \
@@ -236,9 +239,9 @@ run. It does not read the old Fourier traces, k=1 planes, or projected
 coordinates: it refits the generalized helix directly in the raw activation
 space. Token counts are reused from file 05b when present and otherwise computed
 directly, so file 05b is optional. It adapts the
-counterfactual-rollout principle from *Thought Anchors*: apply an 8-token
-activation pulse, remove it, and measure its downstream influence on the
-reasoning trace and final answer. It uses two contexts:
+counterfactual-rollout principle from *Thought Anchors*: apply a brief
+activation pulse (16 tokens by default), remove it, and measure its downstream
+influence on the reasoning trace and final answer. It uses two contexts:
 
 - acceleration from a held-out mid-solution state, where the strongest result
   is a correct `FINAL:` answer in fewer reasoning tokens; and
@@ -252,6 +255,15 @@ Complete correct-versus-wrong continuation log odds replace the saturated
 first-token probability. A direct answer-logit direction is included only as a
 positive control: if it cannot move sequence log odds, all behavioral gates are
 reported as assay-inconclusive rather than as evidence against the helix.
+
+Qwen thinking mode is enabled explicitly through its chat template. Generation
+defaults follow the model's recommended thinking-mode sampling settings
+(`temperature=1.0`, `top_p=0.95`, `top_k=20`) and allow 512 new tokens. Before
+scoring any intervention, the script runs every unmodified baseline prompt. If
+even one baseline cannot emit a complete `FINAL:` answer within the budget, it
+writes `behavioral_helix_baseline_pilot.csv` and aborts; rerun with
+`--max-new-tokens 1024`. This prevents token-censored generations from being
+misreported as evidence for or against the helix.
 
 The script writes only `behavioral_helix_outcomes.csv` for auditability and
 `behavioral_helix_key_results.csv` for interpretation. Output length is a weak

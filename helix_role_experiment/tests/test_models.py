@@ -3,10 +3,31 @@ import unittest
 from pathlib import Path
 
 from helix_role_experiment.config import config_hash
-from helix_role_experiment.models import resolve_adapter_path
+from helix_role_experiment.models import (
+    HuggingFaceTraceCollector,
+    resolve_adapter_path,
+)
 
 
 class ModelConfigurationTests(unittest.TestCase):
+    def test_chat_template_receives_explicit_thinking_mode(self):
+        calls = []
+
+        class Tokenizer:
+            chat_template = "template"
+
+            @staticmethod
+            def apply_chat_template(messages, **kwargs):
+                calls.append((messages, kwargs))
+                return "formatted"
+
+        collector = object.__new__(HuggingFaceTraceCollector)
+        collector.tokenizer = Tokenizer()
+        collector.chat_template_kwargs = {"enable_thinking": True}
+        self.assertEqual(collector.format_prompt("question"), "formatted")
+        self.assertTrue(calls[0][1]["enable_thinking"])
+        self.assertTrue(calls[0][1]["add_generation_prompt"])
+
     def test_adapter_path_uses_first_directory_with_peft_config(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -62,6 +83,34 @@ class ModelConfigurationTests(unittest.TestCase):
             "study": {"seed": 1},
         }
         self.assertEqual(config_hash(base), config_hash(with_fallback))
+
+    def test_explicit_default_thinking_preserves_existing_config_hash(self):
+        base = {"model": {"id": "Qwen/Qwen3.6-27B"}}
+        explicit = {
+            "model": {
+                "id": "Qwen/Qwen3.6-27B",
+                "chat_template_kwargs": {"enable_thinking": True},
+            }
+        }
+        disabled = {
+            "model": {
+                "id": "Qwen/Qwen3.6-27B",
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        }
+        other_base = {"model": {"id": "other/model"}}
+        other_explicit = {
+            "model": {
+                "id": "other/model",
+                "chat_template_kwargs": {"enable_thinking": True},
+            }
+        }
+        self.assertEqual(config_hash(base), config_hash(explicit))
+        self.assertNotEqual(config_hash(base), config_hash(disabled))
+        self.assertNotEqual(
+            config_hash(other_base),
+            config_hash(other_explicit),
+        )
 
 
 if __name__ == "__main__":

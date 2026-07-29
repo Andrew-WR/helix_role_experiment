@@ -34,6 +34,15 @@ def canonical_config(config: dict[str, Any]) -> str:
         # configuration change. The resolved adapter remains recorded in
         # preflight and trace metadata.
         model.pop("adapter_fallback_paths", None)
+        # Qwen3.6's template default is thinking mode. Recording that default
+        # explicitly should not invalidate activations collected under the
+        # identical implicit setting; disabling it remains hash-significant.
+        if (
+            model.get("id") == "Qwen/Qwen3.6-27B"
+            and model.get("chat_template_kwargs")
+            == {"enable_thinking": True}
+        ):
+            model.pop("chat_template_kwargs")
         clean["model"] = model
     return json.dumps(clean, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 

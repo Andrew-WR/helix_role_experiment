@@ -187,6 +187,7 @@ class HuggingFaceTraceCollector:
         attn_implementation: str | None = None,
         low_cpu_mem_usage: bool = True,
         activation_dtype: str = "float16",
+        chat_template_kwargs: dict[str, Any] | None = None,
     ):
         try:
             import torch
@@ -287,6 +288,7 @@ class HuggingFaceTraceCollector:
         self.activation_dtype = activation_dtype
         self.capture_torch_dtype = getattr(torch, activation_dtype)
         self.capture_numpy_dtype = getattr(np, activation_dtype)
+        self.chat_template_kwargs = dict(chat_template_kwargs or {})
 
     def format_prompt(self, prompt: str) -> str:
         if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template:
@@ -294,6 +296,7 @@ class HuggingFaceTraceCollector:
                 [{"role": "user", "content": prompt}],
                 tokenize=False,
                 add_generation_prompt=True,
+                **self.chat_template_kwargs,
             )
         return prompt
 
@@ -309,11 +312,17 @@ class HuggingFaceTraceCollector:
         capture_activations: bool = True,
         capture_eos_logits: bool = True,
         stop_regex: str | None = None,
+        top_p: float = 1.0,
+        top_k: int | None = None,
     ) -> CollectedGeneration:
         torch = self.torch
         invalid = [index for index in layer_indices if index < 0 or index >= len(self.layers)]
         if invalid:
             raise ValueError(f"invalid layer indices {invalid}; model has {len(self.layers)} layers")
+        if not 0.0 < float(top_p) <= 1.0:
+            raise ValueError("top_p must be in (0, 1]")
+        if top_k is not None and int(top_k) <= 0:
+            raise ValueError("top_k must be positive")
         text = self.format_prompt(prompt)
         inputs = self.tokenizer(text, return_tensors="pt")
         input_ids = inputs["input_ids"].to(self.input_device)
@@ -376,7 +385,46 @@ class HuggingFaceTraceCollector:
                 elif capture_eos_logits:
                     eos_logits.append(float("nan"))
                 if temperature > 0:
-                    probabilities = torch.softmax(logits / temperature, dim=-1)
+                    sampling_logits = logits / temperature
+                    if top_k is not None:
+                        keep = min(
+                            int(top_k),
+                            int(sampling_logits.shape[-1]),
+                        )
+                        threshold = torch.topk(
+                            sampling_logits,
+                            keep,
+                            dim=-1,
+                        ).values[..., -1, None]
+                        sampling_logits = sampling_logits.masked_fill(
+                            sampling_logits < threshold,
+                            float("-inf"),
+                        )
+                    if top_p < 1.0:
+                        sorted_logits, sorted_indices = torch.sort(
+                            sampling_logits,
+                            descending=True,
+                            dim=-1,
+                        )
+                        cumulative = torch.cumsum(
+                            torch.softmax(sorted_logits, dim=-1),
+                            dim=-1,
+                        )
+                        remove = cumulative > float(top_p)
+                        remove[..., 1:] = remove[..., :-1].clone()
+                        remove[..., 0] = False
+                        original_order_remove = torch.zeros_like(
+                            remove,
+                            dtype=torch.bool,
+                        ).scatter(1, sorted_indices, remove)
+                        sampling_logits = sampling_logits.masked_fill(
+                            original_order_remove,
+                            float("-inf"),
+                        )
+                    probabilities = torch.softmax(
+                        sampling_logits,
+                        dim=-1,
+                    )
                     if generator is None:
                         generator = torch.Generator(device=probabilities.device)
                         generator.manual_seed(seed)
@@ -660,4 +708,5 @@ def huggingface_collector_from_config(
         attn_implementation=model_config.get("attn_implementation"),
         low_cpu_mem_usage=bool(model_config.get("low_cpu_mem_usage", True)),
         activation_dtype=collection.get("activation_dtype", "float16"),
+        chat_template_kwargs=model_config.get("chat_template_kwargs"),
     )
