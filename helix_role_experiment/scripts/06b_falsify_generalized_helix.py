@@ -312,6 +312,7 @@ class HelixGeometry:
     axial: RawRidge
     closed_shared: RawRidge
     closed_by_family: dict[str, RawRidge]
+    closed_after_axis_by_family: dict[str, RawRidge]
     rotation_by_family: dict[str, RawRidge]
     hyperparameters: dict[str, tuple[float, float]]
 
@@ -329,6 +330,15 @@ class HelixGeometry:
 
     def closed_family_value(self, family: str, progress: float) -> np.ndarray:
         return self.closed_by_family[family].predict(
+            closed_k1_basis(np.asarray([progress]))
+        )[0]
+
+    def closed_after_axis_value(
+        self,
+        family: str,
+        progress: float,
+    ) -> np.ndarray:
+        return self.closed_after_axis_by_family[family].predict(
             closed_k1_basis(np.asarray([progress]))
         )[0]
 
@@ -390,6 +400,7 @@ def fit_geometry(
         ridge,
     )
     closed_by_family: dict[str, RawRidge] = {}
+    closed_after_axis_by_family: dict[str, RawRidge] = {}
     rotation_by_family: dict[str, RawRidge] = {}
     axial_vector = axial.coefficients[0]
     axial_unit = axial_vector / max(float(np.linalg.norm(axial_vector)), EPS)
@@ -398,6 +409,12 @@ def fit_geometry(
         closed_by_family[family] = fit_raw_ridge(
             closed_k1_basis(progress[mask]),
             residual[mask],
+            groups[mask],
+            ridge,
+        )
+        closed_after_axis_by_family[family] = fit_raw_ridge(
+            closed_k1_basis(progress[mask]),
+            residual_after_axis[mask],
             groups[mask],
             ridge,
         )
@@ -423,6 +440,7 @@ def fit_geometry(
             axial=axial,
             closed_shared=closed_shared,
             closed_by_family=closed_by_family,
+            closed_after_axis_by_family=closed_after_axis_by_family,
             rotation_by_family=rotation_by_family,
             hyperparameters=hyperparameters,
         ),
@@ -454,6 +472,13 @@ def model_fit_metrics(
         "closed_k1_by_family": np.vstack(
             [
                 geometry.closed_family_value(family, value)
+                for family, value in zip(families, progress)
+            ]
+        ),
+        "linear_plus_closed_k1_by_family": np.vstack(
+            [
+                geometry.axial_value(value)
+                + geometry.closed_after_axis_value(family, value)
                 for family, value in zip(families, progress)
             ]
         ),
@@ -519,6 +544,16 @@ def heldout_model_fit_metrics(
                 [
                     geometry.closed_family_value(family, value)
                     for family, value in zip(local_families, local_progress)
+                ]
+            ),
+            "linear_plus_closed_k1_by_family": np.vstack(
+                [
+                    geometry.axial_value(value)
+                    + geometry.closed_after_axis_value(family, value)
+                    for family, value in zip(
+                        local_families,
+                        local_progress,
+                    )
                 ]
             ),
             "generalized_helix": np.vstack(
@@ -787,8 +822,8 @@ def falsification_gates(rows: list[dict], layers: list[int]) -> list[dict]:
         (
             "beyond_closed_k1",
             "helix_full",
-            "closed_k1_family_matched",
-            "The open helix must outperform the strongest family-specific closed k=1 comparator.",
+            "linear_plus_closed_k1_matched",
+            "The open helix must outperform the nested linear-axis plus family-specific closed k=1 model.",
         ),
         (
             "family_specific_rotation",
@@ -1129,13 +1164,13 @@ def main() -> None:
                     flush=True,
                 )
                 continue
-            closed_shared = (
-                geometry.closed_shared_value(desired_progress)
-                - geometry.closed_shared_value(target_progress)
-            )
             closed_family = (
                 geometry.closed_family_value(family, desired_progress)
                 - geometry.closed_family_value(family, target_progress)
+            )
+            closed_after_axis = axial_delta + (
+                geometry.closed_after_axis_value(family, desired_progress)
+                - geometry.closed_after_axis_value(family, target_progress)
             )
             other_family = next(
                 value
@@ -1151,12 +1186,12 @@ def main() -> None:
                 rotation_delta,
                 full_norm,
             )
-            closed_shared_matched, closed_shared_match = match_norm(
-                closed_shared,
-                full_norm,
-            )
             closed_family_matched, closed_family_match = match_norm(
                 closed_family,
+                full_norm,
+            )
+            closed_after_axis_matched, closed_after_axis_match = match_norm(
+                closed_after_axis,
                 full_norm,
             )
             wrong_family_matched, wrong_family_match = match_norm(
@@ -1194,14 +1229,14 @@ def main() -> None:
                     rotation_match,
                     1.0,
                 ),
-                "closed_k1_shared_matched": (
-                    closed_shared_matched,
-                    closed_shared_match,
-                    1.0,
-                ),
                 "closed_k1_family_matched": (
                     closed_family_matched,
                     closed_family_match,
+                    1.0,
+                ),
+                "linear_plus_closed_k1_matched": (
+                    closed_after_axis_matched,
+                    closed_after_axis_match,
                     1.0,
                 ),
                 "wrong_family_helix": (

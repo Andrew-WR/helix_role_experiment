@@ -202,9 +202,9 @@ where `r_f(s)` is constrained to a positive linear function. Phase span and
 radius slope are selected from ordinary trajectories by leave-one-problem-out
 prediction. Each intervention geometry is then refit with the target problem
 excluded. Endpoint transfers compare the full helix with equal-norm linear,
-family-specific closed-`k=1`, wrong-family, reversed, off-model random, and
-EOS-orthogonal directions, together with rotational ablation and a
-0.5x/1x/1.5x dose response.
+nested linear-plus-family-specific-closed-`k=1`, wrong-family, reversed,
+off-model random, and EOS-orthogonal directions, together with rotational
+ablation and a 0.5x/1x/1.5x dose response.
 
 Run it on only a small layer set frozen before causal outcomes are inspected.
 It writes `generalized_helix_causal_outcomes.csv`,
