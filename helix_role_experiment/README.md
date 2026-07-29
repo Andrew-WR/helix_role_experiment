@@ -260,8 +260,8 @@ Qwen thinking mode is enabled explicitly through its chat template. Generation
 defaults follow the model's recommended thinking-mode sampling settings
 (`temperature=1.0`, `top_p=0.95`, `top_k=20`) and allow 512 new tokens. Before
 scoring any intervention, the script runs every unmodified baseline prompt. If
-even one baseline cannot emit a complete `FINAL:` answer within the budget, it
-writes `behavioral_helix_baseline_pilot.csv` and aborts; rerun with
+even one baseline rollout cannot emit a complete `FINAL:` answer within the
+budget, it writes `behavioral_helix_baseline_pilot.csv` and aborts; rerun with
 `--max-new-tokens 1024`. This prevents token-censored generations from being
 misreported as evidence for or against the helix.
 

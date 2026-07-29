@@ -738,52 +738,58 @@ def main() -> None:
                 scenario,
                 incorrect,
             )
-            seed = (
-                int(config["study"]["seed"])
-                + 1000 * problem_index
-                + 100 * (scenario == "repair_wrong_commitment")
-            )
-            started = time.perf_counter()
-            generated = backend.collect(
-                prompt,
-                [layer],
-                args.max_new_tokens,
-                seed,
-                temperature=args.temperature,
-                disable_eos=False,
-                intervention=None,
-                capture_activations=False,
-                capture_eos_logits=False,
-                stop_regex=FINAL_LINE_STOP_REGEX,
-                top_p=args.top_p,
-                top_k=args.top_k,
-            )
-            metrics = generated_metrics(
-                backend,
-                generated,
-                problem.answer,
-                args.max_new_tokens,
-            )
-            baseline_pilots[(problem.problem_id, scenario)] = generated
-            pilot_rows.append(
-                {
-                    "problem_id": problem.problem_id,
-                    "family": problem.family,
-                    "scenario": scenario,
-                    "seed": seed,
-                    "max_new_tokens": args.max_new_tokens,
-                    "temperature": args.temperature,
-                    "top_p": args.top_p,
-                    "top_k": args.top_k,
-                    **metrics,
-                }
-            )
-            print(
-                f"Baseline viability: {problem.problem_id} {scenario} "
-                f"({len(generated.token_ids)} tokens, "
-                f"{time.perf_counter() - started:.1f}s)",
-                flush=True,
-            )
+            for rollout in range(args.rollouts):
+                seed = (
+                    int(config["study"]["seed"])
+                    + 1000 * problem_index
+                    + 100 * (scenario == "repair_wrong_commitment")
+                    + rollout
+                )
+                started = time.perf_counter()
+                generated = backend.collect(
+                    prompt,
+                    [layer],
+                    args.max_new_tokens,
+                    seed,
+                    temperature=args.temperature,
+                    disable_eos=False,
+                    intervention=None,
+                    capture_activations=False,
+                    capture_eos_logits=False,
+                    stop_regex=FINAL_LINE_STOP_REGEX,
+                    top_p=args.top_p,
+                    top_k=args.top_k,
+                )
+                metrics = generated_metrics(
+                    backend,
+                    generated,
+                    problem.answer,
+                    args.max_new_tokens,
+                )
+                baseline_pilots[
+                    (problem.problem_id, scenario, rollout)
+                ] = generated
+                pilot_rows.append(
+                    {
+                        "problem_id": problem.problem_id,
+                        "family": problem.family,
+                        "scenario": scenario,
+                        "rollout": rollout,
+                        "seed": seed,
+                        "max_new_tokens": args.max_new_tokens,
+                        "temperature": args.temperature,
+                        "top_p": args.top_p,
+                        "top_k": args.top_k,
+                        **metrics,
+                    }
+                )
+                print(
+                    f"Baseline viability: {problem.problem_id} {scenario} "
+                    f"rollout {rollout} "
+                    f"({len(generated.token_ids)} tokens, "
+                    f"{time.perf_counter() - started:.1f}s)",
+                    flush=True,
+                )
     failed_pilots = [
         row for row in pilot_rows if not int(row["answer_emitted"])
     ]
@@ -793,7 +799,7 @@ def main() -> None:
         )
         write_csv(diagnostic_path, pilot_rows)
         failed_labels = ", ".join(
-            f"{row['problem_id']}/{row['scenario']}"
+            f"{row['problem_id']}/{row['scenario']}/r{row['rollout']}"
             for row in failed_pilots
         )
         raise RuntimeError(
@@ -984,9 +990,9 @@ def main() -> None:
                             args.pulse_tokens,
                         )
                     )
-                    if rollout == 0 and control == "baseline":
+                    if control == "baseline":
                         generated = baseline_pilots[
-                            (problem.problem_id, scenario)
+                            (problem.problem_id, scenario, rollout)
                         ]
                     else:
                         generated = backend.collect(
