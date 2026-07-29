@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -193,12 +194,15 @@ def generated_metrics(
 def select_problems(
     problems: dict[str, ControlledProblem],
     per_family: int,
+    requested_families: set[str] | None = None,
 ) -> list[ControlledProblem]:
     by_family: dict[str, list[ControlledProblem]] = defaultdict(list)
     for problem in problems.values():
         by_family[problem.family].append(problem)
     output = []
     for family in sorted(by_family):
+        if requested_families is not None and family not in requested_families:
+            continue
         output.extend(
             sorted(
                 by_family[family],
@@ -261,12 +265,17 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
                     )
                 ),
                 "mean_sequence_log_odds_correct": float(
-                    np.mean(
-                        [
+                    np.mean(finite_sequence_scores)
+                    if (
+                        finite_sequence_scores := [
                             row["sequence_log_odds_correct"]
                             for row in values
+                            if np.isfinite(
+                                row["sequence_log_odds_correct"]
+                            )
                         ]
                     )
+                    else float("nan")
                 ),
             }
         )
@@ -334,10 +343,10 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
             for row in acceleration_comparators
         )
         and acceleration["mean_sequence_log_odds_correct"]
-        > max(
-            row["mean_sequence_log_odds_correct"]
-            for row in acceleration_comparators
-        )
+        > condition(
+            "accelerate",
+            "baseline",
+        )["mean_sequence_log_odds_correct"]
     )
     output.append(
         {
@@ -360,10 +369,10 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
             "mean_sequence_log_odds_correct": acceleration[
                 "mean_sequence_log_odds_correct"
             ],
-            "best_comparator_sequence_log_odds": max(
-                row["mean_sequence_log_odds_correct"]
-                for row in acceleration_comparators
-            ),
+            "baseline_sequence_log_odds": condition(
+                "accelerate",
+                "baseline",
+            )["mean_sequence_log_odds_correct"],
             "status": (
                 "survived_falsification"
                 if acceleration_survives
@@ -496,9 +505,17 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--layer", type=int, required=True)
     parser.add_argument("--problems-per-family", type=int, default=1)
-    parser.add_argument("--rollouts", type=int, default=2)
-    parser.add_argument("--max-new-tokens", type=int, default=96)
-    parser.add_argument("--pulse-tokens", type=int, default=16)
+    parser.add_argument(
+        "--families",
+        default="all",
+        help=(
+            "'all' or a comma-separated subset of iterative_state_machine,"
+            "fictional_ontology,dependency_graph"
+        ),
+    )
+    parser.add_argument("--rollouts", type=int, default=1)
+    parser.add_argument("--max-new-tokens", type=int, default=64)
+    parser.add_argument("--pulse-tokens", type=int, default=8)
     parser.add_argument("--temperature", type=float, default=0.6)
     args = parser.parse_args()
     if args.problems_per_family <= 0:
@@ -519,12 +536,15 @@ def main() -> None:
         row["variant_id"]: row
         for row in read_jsonl(paths["root"] / "counterfactual_prefixes.jsonl")
     }
-    token_lookup = {
-        row["variant_id"]: int(row["actual_formatted_token_count"])
-        for row in read_csv(
-            paths["tables"] / "counterfactual_actual_token_counts.csv"
-        )
-    }
+    token_path = paths["tables"] / "counterfactual_actual_token_counts.csv"
+    token_lookup = (
+        {
+            row["variant_id"]: int(row["actual_formatted_token_count"])
+            for row in read_csv(token_path)
+        }
+        if token_path.is_file()
+        else {}
+    )
     with np.load(
         paths["tables"] / "counterfactual_activations.npz",
         allow_pickle=False,
@@ -548,9 +568,35 @@ def main() -> None:
             int(config["study"]["seed"]),
         )
     }
+    available_families = {problem.family for problem in all_problems.values()}
+    requested_families = None
+    if args.families != "all":
+        requested_families = {
+            value.strip()
+            for value in args.families.split(",")
+            if value.strip()
+        }
+        missing_families = requested_families - available_families
+        if missing_families:
+            raise ValueError(
+                f"unknown families: {sorted(missing_families)}"
+            )
     selected_problems = select_problems(
         all_problems,
         args.problems_per_family,
+        requested_families,
+    )
+    if not selected_problems:
+        raise ValueError("no controlled problems were selected")
+    print("Loading model for behavioral interventions...", flush=True)
+    backend = huggingface_collector_from_config(
+        config["model"],
+        config["collection"],
+    )
+    print(
+        f"Loaded model; testing layer {layer} on "
+        f"{len(selected_problems)} problems",
+        flush=True,
     )
     indices = np.flatnonzero(activation_layers == layer)
     layer_rows = [observational[index] for index in indices]
@@ -570,6 +616,25 @@ def main() -> None:
         row for row, keep in zip(layer_rows, ordinary) if keep
     ]
     ordinary_centered = centered[ordinary]
+    missing_token_counts = [
+        row["variant_id"]
+        for row in ordinary_rows
+        if row["variant_id"] not in token_lookup
+    ]
+    for variant_id in missing_token_counts:
+        formatted = backend.format_prompt(prefixes[variant_id]["text"])
+        token_lookup[variant_id] = len(
+            backend.tokenizer(
+                formatted,
+                add_special_tokens=True,
+            )["input_ids"]
+        )
+    if missing_token_counts:
+        print(
+            f"Computed {len(missing_token_counts)} tokenizer counts directly; "
+            "file 05b is not required",
+            flush=True,
+        )
     ordinary_tokens = np.asarray(
         [token_lookup[row["variant_id"]] for row in ordinary_rows],
         dtype=np.float64,
@@ -591,16 +656,16 @@ def main() -> None:
             ridge,
         )[0]
 
-    backend = huggingface_collector_from_config(
-        config["model"],
-        config["collection"],
-    )
     torch = backend.torch
     outcomes: list[dict] = []
     assay_rows: list[dict] = []
     rows_by_problem: dict[str, list[dict]] = defaultdict(list)
     for row in layer_rows:
         rows_by_problem[row["problem_id"]].append(row)
+    total_generations = (
+        len(selected_problems) * 2 * args.rollouts * 6
+    )
+    completed_generations = 0
 
     for problem_index, problem in enumerate(selected_problems):
         concise = sorted(
@@ -703,7 +768,8 @@ def main() -> None:
                 incorrect,
             )
             sequence_scores = {}
-            for control, delta in controls.items():
+            for control in ("baseline", "helix_desired"):
+                delta = controls[control]
                 callback = (
                     None
                     if delta is None
@@ -717,34 +783,44 @@ def main() -> None:
                     layer,
                     callback,
                 )
+                print(
+                    f"Sequence score: {problem.problem_id} {scenario} "
+                    f"{control}",
+                    flush=True,
+                )
 
-            positive_delta = answer_logit_direction(
-                backend,
-                problem.answer,
-                incorrect,
-                desired_norm,
-            )
-            positive_score = sequence_log_odds(
-                backend,
-                prompt,
-                problem.answer,
-                incorrect,
-                layer,
-                pulse_callback(
-                    torch,
-                    positive_delta,
-                    args.pulse_tokens,
-                ),
-            )
-            assay_rows.append(
-                {
-                    "problem_id": problem.problem_id,
-                    "family": problem.family,
-                    "scenario": scenario,
-                    "baseline_log_odds": sequence_scores["baseline"],
-                    "positive_control_log_odds": positive_score,
-                }
-            )
+            if scenario == "accelerate":
+                positive_delta = answer_logit_direction(
+                    backend,
+                    problem.answer,
+                    incorrect,
+                    desired_norm,
+                )
+                positive_score = sequence_log_odds(
+                    backend,
+                    prompt,
+                    problem.answer,
+                    incorrect,
+                    layer,
+                    pulse_callback(
+                        torch,
+                        positive_delta,
+                        args.pulse_tokens,
+                    ),
+                )
+                assay_rows.append(
+                    {
+                        "problem_id": problem.problem_id,
+                        "family": problem.family,
+                        "scenario": scenario,
+                        "baseline_log_odds": sequence_scores["baseline"],
+                        "positive_control_log_odds": positive_score,
+                    }
+                )
+                print(
+                    f"Positive-control score: {problem.problem_id}",
+                    flush=True,
+                )
 
             for rollout in range(args.rollouts):
                 seed = (
@@ -754,6 +830,7 @@ def main() -> None:
                     + rollout
                 )
                 for control, delta in controls.items():
+                    started = time.perf_counter()
                     callback = (
                         None
                         if delta is None
@@ -771,7 +848,14 @@ def main() -> None:
                         temperature=args.temperature,
                         disable_eos=False,
                         intervention=callback,
+                        capture_activations=False,
+                        capture_eos_logits=False,
+                        stop_regex=(
+                            r"(?im)^\s*\**final(?:\s+answer)?"
+                            r"\**\s*:\**\s*\S+"
+                        ),
                     )
+                    completed_generations += 1
                     outcomes.append(
                         {
                             "layer": layer,
@@ -789,9 +873,10 @@ def main() -> None:
                                 if delta is None
                                 else float(np.linalg.norm(delta))
                             ),
-                            "sequence_log_odds_correct": sequence_scores[
-                                control
-                            ],
+                            "sequence_log_odds_correct": sequence_scores.get(
+                                control,
+                                float("nan"),
+                            ),
                             **generated_metrics(
                                 backend,
                                 generated,
@@ -799,6 +884,14 @@ def main() -> None:
                                 args.max_new_tokens,
                             ),
                         }
+                    )
+                    print(
+                        f"Generation {completed_generations}/"
+                        f"{total_generations}: {problem.problem_id} "
+                        f"{scenario} {control} "
+                        f"({len(generated.token_ids)} tokens, "
+                        f"{time.perf_counter() - started:.1f}s)",
+                        flush=True,
                     )
             print(
                 f"Behavioral helix: {problem.problem_id} {scenario} done",

@@ -161,7 +161,9 @@ python scripts/06c_behavioral_helix_interventions.py \
   --config configs/qwen_27b_kaggle_smoke.json \
   --layer 63 \
   --problems-per-family 1 \
-  --rollouts 2
+  --rollouts 1 \
+  --max-new-tokens 64 \
+  --pulse-tokens 8
 python scripts/06_run_causal_interventions.py \
   --config configs/qwen_27b_kaggle_smoke.json
 python scripts/07_analyze_results.py \
@@ -222,8 +224,12 @@ remains problem-grouped.
 
 `06c_behavioral_helix_interventions.py` is the compact behavioral causal test
 that replaces the one-token assay for substantive conclusions; it requires the
-file-05/05b outputs but not a completed 06b run. It adapts the
-counterfactual-rollout principle from *Thought Anchors*: apply a 16-token
+raw prefix activations and metadata written by file 05 but not a completed 06b
+run. It does not read the old Fourier traces, k=1 planes, or projected
+coordinates: it refits the generalized helix directly in the raw activation
+space. Token counts are reused from file 05b when present and otherwise computed
+directly, so file 05b is optional. It adapts the
+counterfactual-rollout principle from *Thought Anchors*: apply an 8-token
 activation pulse, remove it, and measure its downstream influence on the
 reasoning trace and final answer. It uses two contexts:
 
@@ -244,6 +250,11 @@ The script writes only `behavioral_helix_outcomes.csv` for auditability and
 `behavioral_helix_key_results.csv` for interpretation. Output length is a weak
 diagnostic; the primary gates are faster correct completion and
 slow-reflection-assisted repair.
+
+Generated activations and per-token EOS logits are not copied back to CPU, and
+generation stops as soon as a nonempty `FINAL:` line appears. For the fastest
+plumbing check, add `--families iterative_state_machine --temperature 0`;
+then run all three families before interpreting an effect.
 
 The smoke and discovery configs use `adapter_neighborhood`: the adapted block
 plus two blocks on either side, together with five depth sentinels. This keeps

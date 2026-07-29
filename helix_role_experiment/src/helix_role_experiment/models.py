@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -267,6 +268,9 @@ class HuggingFaceTraceCollector:
         temperature: float = 0.0,
         disable_eos: bool = False,
         intervention: Callable[[int, int, Any], Any] | None = None,
+        capture_activations: bool = True,
+        capture_eos_logits: bool = True,
+        stop_regex: str | None = None,
     ) -> CollectedGeneration:
         torch = self.torch
         invalid = [index for index in layer_indices if index < 0 or index >= len(self.layers)]
@@ -276,8 +280,13 @@ class HuggingFaceTraceCollector:
         inputs = self.tokenizer(text, return_tensors="pt")
         input_ids = inputs["input_ids"].to(self.input_device)
         attention_mask = inputs.get("attention_mask", torch.ones_like(input_ids)).to(self.input_device)
-        selected_layers = [self.layers[index] for index in layer_indices]
+        selected_layers = (
+            [self.layers[index] for index in layer_indices]
+            if capture_activations or intervention is not None
+            else []
+        )
         captured: dict[int, list[Any]] = {index: [] for index in layer_indices}
+        stop_pattern = re.compile(stop_regex) if stop_regex else None
         step = 0
 
         def hook_factory(local_index: int):
@@ -292,12 +301,13 @@ class HuggingFaceTraceCollector:
                     hidden[:, -1, :] = changed
                     last = changed
                     output = replace_hidden(output, hidden)
-                captured[layer_index].append(
-                    last.detach()
-                    .to(dtype=self.capture_torch_dtype)
-                    .cpu()
-                    .numpy()[0]
-                )
+                if capture_activations:
+                    captured[layer_index].append(
+                        last.detach()
+                        .to(dtype=self.capture_torch_dtype)
+                        .cpu()
+                        .numpy()[0]
+                    )
                 return output
 
             return hook
@@ -323,9 +333,9 @@ class HuggingFaceTraceCollector:
                     return_dict=True,
                 )
                 logits = output.logits[:, -1, :]
-                if eos_set:
+                if capture_eos_logits and eos_set:
                     eos_logits.append(float(logits[0, sorted(eos_set)[0]].item()))
-                else:
+                elif capture_eos_logits:
                     eos_logits.append(float("nan"))
                 if temperature > 0:
                     probabilities = torch.softmax(logits / temperature, dim=-1)
@@ -349,17 +359,29 @@ class HuggingFaceTraceCollector:
                 if not disable_eos and token in eos_set:
                     reached_eos = True
                     break
+                if stop_pattern is not None and stop_pattern.search(
+                    self.tokenizer.decode(
+                        generated,
+                        skip_special_tokens=False,
+                    )
+                ):
+                    break
         count = len(generated)
-        arrays = {
-            layer: np.asarray(values[:count], dtype=self.capture_numpy_dtype)
-            for layer, values in captured.items()
-        }
-        for layer, array in arrays.items():
-            if len(array) != count:
-                raise RuntimeError(
-                    f"hook/token misalignment at layer {layer}: {len(array)} activations "
-                    f"for {count} generated tokens"
+        arrays = {}
+        if capture_activations:
+            arrays = {
+                layer: np.asarray(
+                    values[:count],
+                    dtype=self.capture_numpy_dtype,
                 )
+                for layer, values in captured.items()
+            }
+            for layer, array in arrays.items():
+                if len(array) != count:
+                    raise RuntimeError(
+                        f"hook/token misalignment at layer {layer}: "
+                        f"{len(array)} activations for {count} generated tokens"
+                    )
         return CollectedGeneration(
             token_ids=generated,
             tokens=self.tokenizer.convert_ids_to_tokens(generated),
