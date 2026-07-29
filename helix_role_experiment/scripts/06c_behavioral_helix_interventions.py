@@ -387,6 +387,46 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
             "norm_matched_random",
         )
     ]
+    comparator_reasoning_tokens = float(
+        np.mean(
+            [
+                row["mean_reasoning_tokens_before_final"]
+                for row in repair_comparators
+            ]
+        )
+    )
+    comparator_anchor_fraction = float(
+        np.mean(
+            [
+                row["mean_anchor_sentence_fraction"]
+                for row in repair_comparators
+            ]
+        )
+    )
+    comparator_sentence_repetition = float(
+        np.mean(
+            [
+                row["mean_repeated_sentence_fraction"]
+                for row in repair_comparators
+            ]
+        )
+    )
+    comparator_ngram_repetition = float(
+        np.mean(
+            [
+                row["mean_repeated_4gram_fraction"]
+                for row in repair_comparators
+            ]
+        )
+    )
+    induced_reflection = bool(
+        repair["mean_anchor_sentence_fraction"]
+        > comparator_anchor_fraction
+        or repair["mean_repeated_sentence_fraction"]
+        > comparator_sentence_repetition
+        or repair["mean_repeated_4gram_fraction"]
+        > comparator_ngram_repetition
+    )
     repair_survives = bool(
         assay_valid
         and repair["correct_final_rate"]
@@ -397,19 +437,8 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
         and repair["correct_final_rate"]
         >= max(row["correct_final_rate"] for row in repair_comparators)
         and repair["mean_reasoning_tokens_before_final"]
-        > np.mean(
-            [
-                row["mean_reasoning_tokens_before_final"]
-                for row in repair_comparators
-            ]
-        )
-        and repair["mean_anchor_sentence_fraction"]
-        > np.mean(
-            [
-                row["mean_anchor_sentence_fraction"]
-                for row in repair_comparators
-            ]
-        )
+        > comparator_reasoning_tokens
+        and induced_reflection
     )
     output.append(
         {
@@ -425,25 +454,24 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
             "mean_reasoning_tokens_before_final": repair[
                 "mean_reasoning_tokens_before_final"
             ],
-            "comparator_mean_reasoning_tokens": float(
-                np.mean(
-                    [
-                        row["mean_reasoning_tokens_before_final"]
-                        for row in repair_comparators
-                    ]
-                )
-            ),
+            "comparator_mean_reasoning_tokens": comparator_reasoning_tokens,
             "mean_anchor_sentence_fraction": repair[
                 "mean_anchor_sentence_fraction"
             ],
-            "comparator_mean_anchor_fraction": float(
-                np.mean(
-                    [
-                        row["mean_anchor_sentence_fraction"]
-                        for row in repair_comparators
-                    ]
-                )
+            "comparator_mean_anchor_fraction": comparator_anchor_fraction,
+            "mean_repeated_sentence_fraction": repair[
+                "mean_repeated_sentence_fraction"
+            ],
+            "comparator_mean_repeated_sentence_fraction": (
+                comparator_sentence_repetition
             ),
+            "mean_repeated_4gram_fraction": repair[
+                "mean_repeated_4gram_fraction"
+            ],
+            "comparator_mean_repeated_4gram_fraction": (
+                comparator_ngram_repetition
+            ),
+            "induced_anchor_or_repetition": int(induced_reflection),
             "status": (
                 "survived_falsification"
                 if repair_survives
