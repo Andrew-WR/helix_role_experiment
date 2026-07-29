@@ -122,7 +122,14 @@ Keep model and LoRA weights as Kaggle inputs. The Qwen configs use:
 /kaggle/input/models/andrewwafik/turbo-qwen-27b/pytorch/human_eval_200/1/checkpoint-step-200
 ```
 
-The loader reads `adapter_config.json`, resolves its
+and automatically fall back to:
+
+```text
+/kaggle/input/models/andrewwrufail/turbo-qwen-27b/pytorch/default/1/checkpoint-step-200
+```
+
+The loader selects the first configured directory containing
+`adapter_config.json`, resolves its
 `base_model_name_or_path`, infers the adapted transformer layer from
 `layers_to_transform` or adapter weight keys, loads the base in 4-bit NF4
 across both T4s, and optionally enables the adapter. If the base repository is

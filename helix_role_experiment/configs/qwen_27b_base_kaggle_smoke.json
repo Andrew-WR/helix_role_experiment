@@ -13,6 +13,7 @@
     "dtype": "float16",
     "trust_remote_code": false,
     "adapter_path": "/kaggle/input/models/andrewwafik/turbo-qwen-27b/pytorch/human_eval_200/1/checkpoint-step-200",
+    "adapter_fallback_paths": ["/kaggle/input/models/andrewwrufail/turbo-qwen-27b/pytorch/default/1/checkpoint-step-200"],
     "adapter_enabled": false,
     "low_cpu_mem_usage": true,
     "attn_implementation": "sdpa",

@@ -14,6 +14,7 @@ from helix_role_experiment.config import (
     load_config,
     read_jsonl,
 )
+from helix_role_experiment.models import resolve_adapter_path
 from helix_role_experiment.plotting import line_svg
 from helix_role_experiment.traces import TraceStore
 
@@ -338,7 +339,10 @@ def resolve_tokenizer(config: dict, skip: bool):
         return None
     model_id = config["model"].get("id")
     if model_id in ("auto_from_adapter", "", None):
-        adapter_file = Path(config["model"]["adapter_path"]) / "adapter_config.json"
+        adapter_path = resolve_adapter_path(config["model"])
+        if not adapter_path:
+            raise ValueError("model.adapter_path is required")
+        adapter_file = Path(adapter_path) / "adapter_config.json"
         if not adapter_file.is_file():
             raise FileNotFoundError(f"cannot resolve tokenizer: {adapter_file} is missing")
         adapter = json.loads(adapter_file.read_text(encoding="utf-8"))

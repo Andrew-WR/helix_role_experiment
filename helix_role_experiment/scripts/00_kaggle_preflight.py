@@ -10,6 +10,7 @@ from pathlib import Path
 from _common import PACKAGE_ROOT
 from helix_role_experiment.config import atomic_json, load_config
 from helix_role_experiment.hooks import infer_adapter_target_layers
+from helix_role_experiment.models import resolve_adapter_path
 
 
 def package_version(name: str) -> str | None:
@@ -82,7 +83,7 @@ def main() -> None:
     import torch
     from peft import PeftConfig
 
-    adapter_path = model_config.get("adapter_path")
+    adapter_path = resolve_adapter_path(model_config)
     if not adapter_path:
         raise ValueError("model.adapter_path is required for the Qwen Kaggle configs")
     adapter = Path(adapter_path)

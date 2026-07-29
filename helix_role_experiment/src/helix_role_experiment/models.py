@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -15,6 +16,43 @@ from .hooks import (
     replace_hidden,
 )
 from .subspaces import orthonormalize
+
+
+def resolve_adapter_path(model_config: dict[str, Any]) -> str | None:
+    """Resolve the first usable local adapter path in configured order."""
+
+    primary = model_config.get("adapter_path")
+    fallbacks = model_config.get("adapter_fallback_paths") or []
+    if isinstance(fallbacks, str):
+        fallbacks = [fallbacks]
+    candidates = [
+        str(value)
+        for value in (primary, *fallbacks)
+        if value not in (None, "")
+    ]
+    if not candidates:
+        return None
+    checked_local = []
+    for candidate in candidates:
+        path = Path(candidate).expanduser()
+        looks_local = (
+            path.is_absolute()
+            or candidate.startswith(".")
+            or "\\" in candidate
+        )
+        if path.is_dir() and (path / "adapter_config.json").is_file():
+            return str(path)
+        if looks_local:
+            checked_local.append(str(path))
+            continue
+        # Preserve support for a Hugging Face adapter repository ID.
+        return candidate
+    raise FileNotFoundError(
+        "No configured PEFT adapter directory contains adapter_config.json. "
+        f"Checked, in order: {'; '.join(checked_local)}. "
+        "Attach one of these Kaggle "
+        "model inputs or update model.adapter_path/adapter_fallback_paths."
+    )
 
 
 @dataclass
@@ -591,6 +629,16 @@ def huggingface_collector_from_config(
 ) -> HuggingFaceTraceCollector:
     quantization = model_config.get("quantization") or {}
     collection = collection_config or {}
+    adapter_path = resolve_adapter_path(model_config)
+    if (
+        adapter_path
+        and adapter_path != model_config.get("adapter_path")
+    ):
+        print(
+            f"Primary adapter path is unavailable; using fallback "
+            f"{adapter_path}",
+            flush=True,
+        )
     return HuggingFaceTraceCollector(
         model_id=model_config.get("id"),
         revision=model_config.get("revision"),
@@ -598,7 +646,7 @@ def huggingface_collector_from_config(
         device=model_config.get("device", "auto"),
         dtype=model_config.get("dtype", "auto"),
         trust_remote_code=bool(model_config.get("trust_remote_code", False)),
-        adapter_path=model_config.get("adapter_path"),
+        adapter_path=adapter_path,
         adapter_enabled=bool(model_config.get("adapter_enabled", True)),
         load_in_4bit=bool(quantization.get("load_in_4bit", False)),
         bnb_4bit_quant_type=quantization.get("bnb_4bit_quant_type", "nf4"),

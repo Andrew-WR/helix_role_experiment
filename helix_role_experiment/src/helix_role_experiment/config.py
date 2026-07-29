@@ -28,6 +28,13 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 def canonical_config(config: dict[str, Any]) -> str:
     clean = {key: value for key, value in config.items() if not key.startswith("_")}
+    if isinstance(clean.get("model"), dict):
+        model = dict(clean["model"])
+        # Kaggle mount aliases are environment routing, not a scientific
+        # configuration change. The resolved adapter remains recorded in
+        # preflight and trace metadata.
+        model.pop("adapter_fallback_paths", None)
+        clean["model"] = model
     return json.dumps(clean, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
