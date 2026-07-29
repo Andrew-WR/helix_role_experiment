@@ -148,6 +148,9 @@ python scripts/04_build_counterfactual_prefixes.py \
   --config configs/qwen_27b_kaggle_smoke.json
 python scripts/05_run_observational_cross.py \
   --config configs/qwen_27b_kaggle_smoke.json
+python scripts/05b_compare_open_progress_models.py \
+  --config configs/qwen_27b_kaggle_smoke.json \
+  --layers late-half
 python scripts/06_run_causal_interventions.py \
   --config configs/qwen_27b_kaggle_smoke.json
 python scripts/07_analyze_results.py \
@@ -157,6 +160,30 @@ python scripts/07_analyze_results.py \
 Run `qwen_27b_base_kaggle_smoke.json` identically for the adapter-disabled
 baseline. Both configs use the adapter metadata to resolve the identical base
 checkpoint.
+
+Before causal interventions, `05b_compare_open_progress_models.py` tests
+whether the fixed closed Fourier `k=1` assumption is actually preferred. In
+one file it:
+
+- compares closed `k=1` output-token trajectories with open linear,
+  polynomial, DCT, spline, and drift-plus-rotation bases using contiguous
+  held-out token blocks;
+- compares raw controlled-prefix activations under position/confidence/EOS
+  nuisances plus linear, open-curve, closed-loop, and spiral-with-drift
+  progress models using problem-grouped and leave-family-out evaluation;
+- obtains actual formatted Qwen tokenizer lengths rather than treating
+  whitespace word counts as token counts; and
+- reports off-plane residual norm divided by centered activation norm, making
+  manifold distance comparable across depth.
+
+It writes `temporal_open_basis_*`, `progress_manifold_model_*`,
+`observational_geometry_normalized.csv`, and
+`counterfactual_actual_token_counts.csv` under `tables/`, plus figures 14 and
+15. A positive `incremental_r2_vs_nuisance` means structural progress adds
+held-out activation information after actual token position, confidence,
+operation, EOS logit, and termination are included. The default
+`--layers late-half` follows the resource-limited late-layer plan; use an
+explicit range such as `--layers 32-63` to lock it.
 
 The smoke and discovery configs use `adapter_neighborhood`: the adapted block
 plus two blocks on either side, together with five depth sentinels. This keeps
