@@ -153,6 +153,10 @@ python scripts/05_run_observational_cross.py \
 python scripts/05b_compare_open_progress_models.py \
   --config configs/qwen_27b_kaggle_smoke.json \
   --layers late-half
+python scripts/06b_falsify_generalized_helix.py \
+  --config configs/qwen_27b_kaggle_smoke.json \
+  --layers 51,55,59 \
+  --pairs-per-family 2
 python scripts/06_run_causal_interventions.py \
   --config configs/qwen_27b_kaggle_smoke.json
 python scripts/07_analyze_results.py \
@@ -186,6 +190,30 @@ held-out activation information after actual token position, confidence,
 operation, EOS logit, and termination are included. The default
 `--layers late-half` follows the resource-limited late-layer plan; use an
 explicit range such as `--layers 32-63` to lock it.
+
+`06b_falsify_generalized_helix.py` is a deliberately small, falsification-first
+causal test. It fits a nuisance-residualized minimal generalized helix
+
+```text
+h_f(s) = mu + s*u + r_f(s)[cos(omega_f*s)*v_f + sin(omega_f*s)*w_f]
+```
+
+where `r_f(s)` is constrained to a positive linear function. Phase span and
+radius slope are selected from ordinary trajectories by leave-one-problem-out
+prediction. Each intervention geometry is then refit with the target problem
+excluded. Endpoint transfers compare the full helix with equal-norm linear,
+family-specific closed-`k=1`, wrong-family, reversed, off-model random, and
+EOS-orthogonal directions, together with rotational ablation and a
+0.5x/1x/1.5x dose response.
+
+Run it on only a small layer set frozen before causal outcomes are inspected.
+It writes `generalized_helix_causal_outcomes.csv`,
+`generalized_helix_intervention_summary.csv`,
+`generalized_helix_falsification_gates.csv`,
+`generalized_helix_geometry_selection.csv`, and
+`generalized_helix_model_fit.csv`. A failed smoke gate is a reason to reject or
+simplify that part of the model, not a p-value; discovery-scale replication
+remains problem-grouped.
 
 The smoke and discovery configs use `adapter_neighborhood`: the adapted block
 plus two blocks on either side, together with five depth sentinels. This keeps
