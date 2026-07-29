@@ -5,7 +5,7 @@ import time
 
 import numpy as np
 
-from _common import write_csv
+from _common import parse_layer_spec, write_csv
 from helix_role_experiment.config import atomic_json, ensure_output_dirs, load_config, seed_everything
 from helix_role_experiment.subspaces import (
     fit_complex_coefficient_model,
@@ -23,14 +23,30 @@ from helix_role_experiment.traces import TraceStore
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fit frozen shared candidate subspaces")
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--layers",
+        default=None,
+        help="'all', 'late-half', comma-separated layers, or ranges such as 32-63",
+    )
     args = parser.parse_args()
     config = load_config(args.config)
     paths = ensure_output_dirs(config)
     rng = seed_everything(int(config["study"]["seed"]) + 202)
     store = TraceStore(paths["traces"])
+    manifest = store.read_manifest()
+    selected_layers = set(
+        parse_layer_spec(
+            args.layers,
+            [int(row["layer"]) for row in manifest],
+        )
+    )
+    print(f"Shared-subspace fit layers: {sorted(selected_layers)}", flush=True)
     by_layer: dict[int, list[tuple[dict, np.ndarray]]] = {}
     for row, activations in store.iter_traces():
-        if len(activations) >= int(config["analysis"]["minimum_trace_length"]):
+        if (
+            int(row["layer"]) in selected_layers
+            and len(activations) >= int(config["analysis"]["minimum_trace_length"])
+        ):
             by_layer.setdefault(int(row["layer"]), []).append((row, activations))
     index = {"estimators": [], "selection_rule": "validation spectral selectivity only"}
     evaluation_rows = []
@@ -163,6 +179,10 @@ def main() -> None:
             )
         winner = max(estimator_scores, key=estimator_scores.get)
         index.setdefault("selected_by_layer", {})[str(layer)] = winner
+        print(
+            f"Shared-subspace fit: layer {layer} selected {winner}",
+            flush=True,
+        )
     write_csv(paths["tables"] / "shared_subspace_evaluation.csv", evaluation_rows)
     atomic_json(paths["models"] / "subspace_index.json", index)
     print(f"Fit shared subspaces for {len(by_layer)} layers")

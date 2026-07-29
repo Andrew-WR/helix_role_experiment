@@ -4,11 +4,11 @@ import argparse
 
 import numpy as np
 
-from _common import write_csv
+from _common import parse_layer_spec, write_csv
 from helix_role_experiment.config import ensure_output_dirs, load_config, seed_everything
 from helix_role_experiment.fourier import (
     exact_whiten_2d,
-    isolate_harmonic,
+    harmonic_svd,
     null_audit,
     preprocessing_sensitivity,
     tautology_audit,
@@ -25,11 +25,24 @@ from helix_role_experiment.traces import TraceStore
 def main() -> None:
     parser = argparse.ArgumentParser(description="Audit Fourier tautology, nulls, and stability")
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--layers",
+        default=None,
+        help="'all', 'late-half', comma-separated layers, or ranges such as 32-63",
+    )
     args = parser.parse_args()
     config = load_config(args.config)
     paths = ensure_output_dirs(config)
     rng = seed_everything(int(config["study"]["seed"]) + 101)
     store = TraceStore(paths["traces"])
+    manifest = store.read_manifest()
+    selected_layers = set(
+        parse_layer_spec(
+            args.layers,
+            [int(row["layer"]) for row in manifest],
+        )
+    )
+    print(f"Fourier audit layers: {sorted(selected_layers)}", flush=True)
     tautology_rows = []
     null_rows = []
     sensitivity_rows = []
@@ -37,7 +50,11 @@ def main() -> None:
     planes_by_layer: dict[int, list[np.ndarray]] = {}
     labels_by_layer: dict[int, list[str]] = {}
     draws = int(config["audit"]["null_draws"])
+    processed = 0
     for row, activations in store.iter_traces():
+        if int(row["layer"]) not in selected_layers:
+            continue
+        processed += 1
         if len(activations) < int(config["analysis"]["minimum_trace_length"]):
             tautology_rows.append(
                 {
@@ -75,8 +92,7 @@ def main() -> None:
                 **audit,
             }
         )
-        projected, _, _ = isolate_harmonic(activations)
-        u, singular_full, _ = np.linalg.svd(projected, full_matrices=False)
+        u, singular_full, _ = harmonic_svd(activations)
         coords, _ = exact_whiten_2d(u[:, :2] * singular_full[:2])
         phase = unwrap_with_orientation(np.arctan2(coords[:, 1], coords[:, 0]))
         phase -= phase[0]
@@ -107,6 +123,11 @@ def main() -> None:
         layer = int(row["layer"])
         planes_by_layer.setdefault(layer, []).append(plane)
         labels_by_layer.setdefault(layer, []).append(row["problem_id"])
+        if processed % 16 == 0:
+            print(
+                f"Fourier audit: processed {processed} selected traces",
+                flush=True,
+            )
 
     write_csv(paths["tables"] / "tautology_audit.csv", tautology_rows)
     write_csv(paths["tables"] / "spectral_null_audit.csv", null_rows)
@@ -157,4 +178,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

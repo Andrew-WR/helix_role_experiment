@@ -45,3 +45,34 @@ def read_csv(path: str | Path) -> list[dict[str, str]]:
     with Path(path).open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
 
+
+def parse_layer_spec(
+    specification: str | None,
+    available: list[int],
+) -> list[int]:
+    values = sorted(set(int(layer) for layer in available))
+    if not values:
+        raise ValueError("no layers are available")
+    if specification in (None, "all"):
+        return values
+    if specification == "late-half":
+        midpoint = (max(values) + 1) // 2
+        selected = [layer for layer in values if layer >= midpoint]
+    else:
+        selected_set: set[int] = set()
+        for item in specification.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if "-" in item:
+                left, right = item.split("-", 1)
+                selected_set.update(range(int(left), int(right) + 1))
+            else:
+                selected_set.add(int(item))
+        selected = sorted(selected_set)
+    missing = sorted(set(selected) - set(values))
+    if missing:
+        raise ValueError(f"requested layers are unavailable: {missing}")
+    if not selected:
+        raise ValueError("layer selection is empty")
+    return selected

@@ -44,6 +44,28 @@ def isolate_harmonic(x: np.ndarray, k: int = 1) -> tuple[np.ndarray, np.ndarray,
     return projected, centered - projected, mean
 
 
+def harmonic_svd(
+    x: np.ndarray,
+    k: int = 1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """SVD of a harmonic reconstruction without materializing a large SVD.
+
+    If Q is the two-column orthonormal temporal harmonic basis and
+    C = Q.T @ X, then Q @ C has the same singular values and right singular
+    vectors as C. Its left singular vectors are Q @ U_C. Computing the SVD of
+    the 2-by-hidden-size coefficient matrix is exactly equivalent and much
+    faster than decomposing the full token-by-hidden-size reconstruction.
+    """
+    centered, _ = center_trace(x)
+    q = harmonic_basis(len(centered), k)
+    coefficients = q.T @ centered
+    coefficient_u, singular, vh = np.linalg.svd(
+        coefficients,
+        full_matrices=False,
+    )
+    return q @ coefficient_u, singular, vh
+
+
 def energy(x: np.ndarray) -> float:
     return float(np.square(np.asarray(x, dtype=np.float64)).sum())
 
@@ -81,8 +103,7 @@ def circular_difference(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def tautology_audit(x: np.ndarray) -> dict[str, float]:
-    projected, _, _ = isolate_harmonic(x, 1)
-    u, singular, _ = np.linalg.svd(projected, full_matrices=False)
+    u, singular, _ = harmonic_svd(x, 1)
     if len(singular) < 2 or singular[1] <= EPS:
         raise ValueError("k=1 reconstruction is rank deficient")
     coords = u[:, :2] * singular[:2]
@@ -262,4 +283,3 @@ def preprocessing_sensitivity(x: np.ndarray) -> list[dict[str, float | str]]:
     reflected = boundary_reflect(x)
     rows.append({"method": "reflected_boundary", **spectral_concentration(reflected)})
     return rows
-

@@ -141,9 +141,11 @@ Then run the LoRA smoke:
 python scripts/01_collect_traces.py \
   --config configs/qwen_27b_kaggle_smoke.json
 python scripts/02_fourier_audit.py \
-  --config configs/qwen_27b_kaggle_smoke.json
+  --config configs/qwen_27b_kaggle_smoke.json \
+  --layers 32-63
 python scripts/03_fit_shared_subspace.py \
-  --config configs/qwen_27b_kaggle_smoke.json
+  --config configs/qwen_27b_kaggle_smoke.json \
+  --layers 32-63
 python scripts/04_build_counterfactual_prefixes.py \
   --config configs/qwen_27b_kaggle_smoke.json
 python scripts/05_run_observational_cross.py \

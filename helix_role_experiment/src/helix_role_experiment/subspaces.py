@@ -5,7 +5,7 @@ from typing import Iterable
 
 import numpy as np
 
-from .fourier import EPS, center_trace, harmonic_basis, temporal_project
+from .fourier import EPS, center_trace, harmonic_basis, harmonic_svd, temporal_project
 
 
 def orthonormalize(matrix: np.ndarray, rank: int | None = None) -> np.ndarray:
@@ -20,9 +20,7 @@ def orthonormalize(matrix: np.ndarray, rank: int | None = None) -> np.ndarray:
 
 
 def trace_harmonic_plane(x: np.ndarray, k: int = 1) -> tuple[np.ndarray, np.ndarray]:
-    centered, _ = center_trace(x)
-    reconstruction = temporal_project(centered, harmonic_basis(len(centered), k))
-    _, singular, vt = np.linalg.svd(reconstruction, full_matrices=False)
+    _, singular, vt = harmonic_svd(x, k)
     if len(singular) < 2 or singular[1] <= EPS:
         raise ValueError("trace harmonic plane is rank deficient")
     return vt[:2].T, singular[:2]
