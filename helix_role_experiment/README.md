@@ -157,6 +157,11 @@ python scripts/06b_falsify_generalized_helix.py \
   --config configs/qwen_27b_kaggle_smoke.json \
   --layers 51,55,59 \
   --pairs-per-family 2
+python scripts/06c_behavioral_helix_interventions.py \
+  --config configs/qwen_27b_kaggle_smoke.json \
+  --layer 63 \
+  --problems-per-family 1 \
+  --rollouts 2
 python scripts/06_run_causal_interventions.py \
   --config configs/qwen_27b_kaggle_smoke.json
 python scripts/07_analyze_results.py \
@@ -214,6 +219,31 @@ It writes `generalized_helix_causal_outcomes.csv`,
 `generalized_helix_model_fit.csv`. A failed smoke gate is a reason to reject or
 simplify that part of the model, not a p-value; discovery-scale replication
 remains problem-grouped.
+
+`06c_behavioral_helix_interventions.py` is the compact behavioral causal test
+that replaces the one-token assay for substantive conclusions; it requires the
+file-05/05b outputs but not a completed 06b run. It adapts the
+counterfactual-rollout principle from *Thought Anchors*: apply a 16-token
+activation pulse, remove it, and measure its downstream influence on the
+reasoning trace and final answer. It uses two contexts:
+
+- acceleration from a held-out mid-solution state, where the strongest result
+  is a correct `FINAL:` answer in fewer reasoning tokens; and
+- repair of a planted wrong commitment, where useful backward steering must
+  induce planning, uncertainty management, checking, or repetition **and**
+  improve final correctness. Slower or longer text alone does not pass.
+
+Only baseline, desired/opposite generalized-helix, linear,
+linear-plus-family-closed-`k=1`, and equal-norm random conditions are retained.
+Complete correct-versus-wrong continuation log odds replace the saturated
+first-token probability. A direct answer-logit direction is included only as a
+positive control: if it cannot move sequence log odds, all behavioral gates are
+reported as assay-inconclusive rather than as evidence against the helix.
+
+The script writes only `behavioral_helix_outcomes.csv` for auditability and
+`behavioral_helix_key_results.csv` for interpretation. Output length is a weak
+diagnostic; the primary gates are faster correct completion and
+slow-reflection-assisted repair.
 
 The smoke and discovery configs use `adapter_neighborhood`: the adapted block
 plus two blocks on either side, together with five depth sentinels. This keeps

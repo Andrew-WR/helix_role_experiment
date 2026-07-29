@@ -454,6 +454,114 @@ class HuggingFaceTraceCollector:
             "fixed_continuation_budget": 1,
         }
 
+    def score_continuations(
+        self,
+        prompt: str,
+        continuations: list[str],
+        layer_index: int,
+        intervention: Callable[[int, int, Any], Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Teacher-force complete continuations under a persistent intervention.
+
+        Unlike ``score_first_transition``, this avoids relying on one literal
+        opening token. Each continuation is scored autoregressively, with the
+        intervention applied at the selected layer while predicting every
+        continuation token.
+        """
+
+        if not continuations:
+            raise ValueError("at least one continuation is required")
+        if layer_index < 0 or layer_index >= len(self.layers):
+            raise ValueError(f"invalid layer {layer_index}")
+        torch = self.torch
+        text = self.format_prompt(prompt)
+        inputs = self.tokenizer(text, return_tensors="pt")
+        prompt_ids = inputs["input_ids"].to(self.input_device)
+        prompt_mask = inputs.get(
+            "attention_mask",
+            torch.ones_like(prompt_ids),
+        ).to(self.input_device)
+        results: list[dict[str, Any]] = []
+        for continuation in continuations:
+            target_ids = self.tokenizer(
+                continuation,
+                add_special_tokens=False,
+                return_tensors="pt",
+            )["input_ids"][0]
+            if len(target_ids) == 0:
+                raise ValueError(
+                    f"continuation tokenized empty: {continuation!r}"
+                )
+            step = 0
+
+            def hook(_module: Any, _inputs: Any, output: Any) -> Any:
+                hidden = hidden_from_output(output)
+                if intervention is not None:
+                    changed = intervention(
+                        layer_index,
+                        step,
+                        hidden[:, -1, :],
+                    )
+                    hidden = hidden.clone()
+                    hidden[:, -1, :] = changed
+                    output = replace_hidden(output, hidden)
+                return output
+
+            current_ids = prompt_ids
+            current_mask = prompt_mask
+            past = None
+            token_log_probabilities: list[float] = []
+            with registered_hooks(
+                [self.layers[layer_index]],
+                lambda _index: hook,
+            ), torch.inference_mode():
+                for step, target_id in enumerate(target_ids.tolist()):
+                    output = self.model(
+                        input_ids=current_ids,
+                        attention_mask=current_mask,
+                        past_key_values=past,
+                        use_cache=True,
+                        return_dict=True,
+                    )
+                    logits = output.logits[0, -1].float()
+                    token_log_probabilities.append(
+                        float(
+                            torch.log_softmax(logits, dim=-1)[
+                                int(target_id)
+                            ].item()
+                        )
+                    )
+                    past = output.past_key_values
+                    current_ids = torch.as_tensor(
+                        [[int(target_id)]],
+                        device=self.input_device,
+                    )
+                    current_mask = torch.cat(
+                        (
+                            current_mask,
+                            torch.ones(
+                                (1, 1),
+                                device=current_mask.device,
+                                dtype=current_mask.dtype,
+                            ),
+                        ),
+                        dim=1,
+                    )
+            results.append(
+                {
+                    "continuation": continuation,
+                    "token_count": len(token_log_probabilities),
+                    "total_log_probability": float(
+                        sum(token_log_probabilities)
+                    ),
+                    "mean_log_probability": float(
+                        np.mean(token_log_probabilities)
+                    ),
+                    "token_log_probabilities": token_log_probabilities,
+                }
+            )
+        return results
+
 
 def huggingface_collector_from_config(
     model_config: dict[str, Any],
