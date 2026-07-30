@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import dataclass
 
 
 FINAL_PATTERN = re.compile(
@@ -16,11 +17,33 @@ ANCHOR_PATTERNS = tuple(
         r"\bmaybe\b|\buncertain\b|\binstead\b|\btry again\b",
     )
 )
-SENTENCE_PATTERN = re.compile(r"(?<=[.!?])\s+|\n+")
 WORD_PATTERN = re.compile(r"[a-z0-9]+")
+SPECIAL_TOKEN_PATTERN = re.compile(r"<\|[^|<>]+\|>")
+ABBREVIATIONS = {
+    "e.g.",
+    "i.e.",
+    "etc.",
+    "vs.",
+    "mr.",
+    "mrs.",
+    "ms.",
+    "dr.",
+    "prof.",
+    "fig.",
+    "eq.",
+    "no.",
+}
+
+
+@dataclass(frozen=True)
+class SentenceSpan:
+    text: str
+    start: int
+    end: int
 
 
 def normalize_answer(value: str) -> str:
+    value = SPECIAL_TOKEN_PATTERN.sub("", value)
     return " ".join(WORD_PATTERN.findall(value.casefold()))
 
 
@@ -47,12 +70,105 @@ def final_answer_is_correct(text: str, expected: str) -> bool:
     return observed == target
 
 
+def _period_is_terminal(text: str, index: int, start: int) -> bool:
+    previous = text[index - 1] if index else ""
+    following = text[index + 1] if index + 1 < len(text) else ""
+    if previous.isdigit() and following.isdigit():
+        return False
+    if text[index : index + 3] == "..." or text[max(0, index - 2) : index + 1] == "...":
+        return False
+    prefix = text[start : index + 1].rstrip().casefold()
+    last = prefix.split()[-1] if prefix.split() else ""
+    if last in ABBREVIATIONS:
+        return False
+    if re.fullmatch(r"(?:[a-z]\.){1,4}", last):
+        return False
+    return not following or following.isspace() or following == "<"
+
+
+def split_sentence_spans(text: str) -> list[SentenceSpan]:
+    """Split reasoning text without breaking decimals, LaTeX, or code."""
+
+    spans: list[SentenceSpan] = []
+    start = 0
+    index = 0
+    dollar_mode = 0
+    latex_closer: str | None = None
+    in_inline_code = False
+    in_fenced_code = False
+    environment_depth = 0
+
+    def append_span(end: int) -> None:
+        nonlocal start
+        left = start
+        right = end
+        while left < right and text[left].isspace():
+            left += 1
+        while right > left and text[right - 1].isspace():
+            right -= 1
+        if right > left:
+            spans.append(SentenceSpan(text[left:right], left, right))
+        start = end
+
+    while index < len(text):
+        if text.startswith("```", index):
+            in_fenced_code = not in_fenced_code
+            index += 3
+            continue
+        character = text[index]
+        if in_fenced_code:
+            index += 1
+            continue
+        if character == "`":
+            in_inline_code = not in_inline_code
+            index += 1
+            continue
+        if in_inline_code:
+            index += 1
+            continue
+        if text.startswith("\\begin{", index):
+            environment_depth += 1
+        elif text.startswith("\\end{", index) and environment_depth:
+            environment_depth -= 1
+        if latex_closer is not None:
+            if text.startswith(latex_closer, index):
+                index += len(latex_closer)
+                latex_closer = None
+            else:
+                index += 1
+            continue
+        if text.startswith("\\(", index):
+            latex_closer = "\\)"
+            index += 2
+            continue
+        if text.startswith("\\[", index):
+            latex_closer = "\\]"
+            index += 2
+            continue
+        if character == "$" and (index == 0 or text[index - 1] != "\\"):
+            marker_length = 2 if text.startswith("$$", index) else 1
+            dollar_mode = 0 if dollar_mode == marker_length else marker_length
+            index += marker_length
+            continue
+        protected = bool(dollar_mode or environment_depth)
+        terminal = False
+        if not protected and character in "!?;":
+            terminal = True
+        elif not protected and character == ".":
+            terminal = _period_is_terminal(text, index, start)
+        if terminal:
+            append_span(index + 1)
+        elif character == "\n":
+            current = text[start:index].strip().casefold()
+            if current.startswith("final:") or "\\boxed" in current:
+                append_span(index)
+        index += 1
+    append_span(len(text))
+    return spans
+
+
 def split_sentences(text: str) -> list[str]:
-    return [
-        value.strip()
-        for value in SENTENCE_PATTERN.split(text.strip())
-        if value.strip()
-    ]
+    return [span.text for span in split_sentence_spans(text)]
 
 
 def anchor_sentence_fraction(text: str) -> float:

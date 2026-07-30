@@ -17,7 +17,8 @@ model = [
   "accelerate>=0.30",
   "safetensors>=0.4",
   "peft>=0.18",
-  "bitsandbytes>=0.45"
+  "bitsandbytes>=0.45",
+  "sentence-transformers>=2.7"
 ]
 test = ["pytest>=8"]
 

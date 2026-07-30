@@ -167,14 +167,10 @@ python scripts/06b_falsify_generalized_helix.py \
 python scripts/06c_behavioral_helix_interventions.py \
   --config configs/qwen_27b_kaggle_smoke.json \
   --layer 63 \
-  --problems 1 \
-  --rollouts 1 \
-  --benchmark math500 \
-  --math500-levels 2,3 \
-  --calibration-problems 4 \
-  --controls core \
+  --math500-level 4 \
   --generation-safety-ceiling 8192 \
-  --pulse-tokens 16 \
+  --progress-step 0.05 \
+  --transport-alpha 1.0 \
   --temperature 1.0 \
   --top-p 0.95 \
   --top-k 20
@@ -237,64 +233,69 @@ simplify that part of the model, not a p-value; discovery-scale replication
 remains problem-grouped.
 
 `06c_behavioral_helix_interventions.py` is the compact behavioral causal test
-that replaces the one-token assay for substantive conclusions. It is
-self-contained: files 01-05, 05b, and 06b do not need to be run. After loading
-the model once, file 06c generates four small modular-arithmetic calibration
-problems, records only their concise state trajectories at the requested layer,
-and fits the generalized helix directly in raw activation space. This compact
-calibration is cached as
-`behavioral_helix_internal_calibration_layer_<LAYER>.npz`; reruns in the same
-Kaggle environment reuse it automatically. The cache is updated atomically
-after every one-token probe, so an interrupted calibration resumes at the next
-state rather than starting over. Use
-`--rebuild-internal-calibration` only when intentionally replacing that cache.
-It then adapts the
-counterfactual-rollout principle from *Thought Anchors*: apply a brief
-activation pulse (16 tokens by default), remove it, and measure its downstream
-influence on the reasoning trace and final answer. It uses two contexts:
+and is self-contained: files 01-05, 05b, and 06b do not need to be run. It
+selects two fixed, disjoint, level-4 integer-answer MATH-500 problems from the
+study seed and writes their identities before generation. The first is the
+calibration problem; the second is the test problem. Neither is silently
+replaced if Qwen fails it.
 
-- acceleration on a held-out MATH-500 problem from its initial state, where
-  the strongest result is a correct `FINAL:` answer in fewer reasoning
-  tokens; and
-- repair of a planted wrong commitment, where useful backward steering must
-  induce planning, uncertainty management, checking, or repetition **and**
-  improve final correctness. Slower or longer text alone does not pass.
+The calibration run is a complete natural Qwen reasoning rollout. File 06c
+records the requested layer at every generated output token and defines
+calibration progress as `t/(T-1)`. It fits linear, linear-plus-closed-`k=1`,
+and generalized-helix curves directly to this trajectory. Generalized-helix
+phase span and radius slope are selected using contiguous blocked temporal
+validation, not random token splits. The unmodified test rollout then measures
+centered out-of-prompt transfer before causal results are interpreted.
 
-The core comparison retains baseline, desired generalized-helix, linear, and
-linear-plus-family-closed-`k=1` conditions.
-Complete correct-versus-wrong continuation log odds replace the saturated
-first-token probability. A direct answer-logit direction is included only as a
-positive control: if it cannot move sequence log odds, all behavioral gates are
-reported as assay-inconclusive rather than as evidence against the helix.
+The causal operation is local forward transport throughout reasoning:
+
+```text
+delta_t = h(min(s_t + 0.05, 1)) - h(s_t)
+s_t = min(t / T_baseline, 1)
+```
+
+The generalized-helix, linear, and linear-plus-closed-`k=1` local steps are
+norm matched at every token. This is important: unlike the old endpoint chord,
+the local closed-`k=1` displacement is nonzero and therefore remains a real
+rotational comparator. All three interventions reuse the baseline sampling
+seed.
 
 Qwen thinking mode is enabled explicitly through its chat template. Generation
 defaults follow the model's recommended thinking-mode sampling settings
 (`temperature=1.0`, `top_p=0.95`, `top_k=20`). The default behavioral task is a
-deterministically selected integer-answer MATH-500 problem at level 2 or 3.
-The iterative-state helix is fitted only on the existing controlled
-calibration prompts generated inside file 06c, so MATH-500 is a held-out
-cross-task transfer test rather than geometry training data.
+deterministically selected integer-answer MATH-500 problem at level 4.
 
 There is no ordinary reasoning-token budget. Generation stops at a complete
 `FINAL:` line or EOS. `--generation-safety-ceiling 8192` is only an emergency
-loop guard; reaching it invalidates the prompt instead of being treated as a
-causal result. Before scoring any intervention, the script runs every
-unmodified baseline rollout. A failure writes
-`behavioral_helix_baseline_pilot.csv` and aborts. The default `--controls core`
-keeps only baseline, generalized helix, linear, and linear-plus-closed-`k=1`;
-use `--controls full` to add opposite and random controls. Core mode cuts the
-expensive generations from 12 to 8 per problem.
+loop guard. Both fixed baselines must emit a correct final answer. Final-answer
+normalization strips decoded special tokens such as `<|im_end|>`.
 
-The script writes only `behavioral_helix_outcomes.csv` for auditability and
-`behavioral_helix_key_results.csv` for interpretation. Output length is a weak
-diagnostic; the primary gates are faster correct completion and
-slow-reflection-assisted repair.
+After generation, Qwen is released and `Qwen/Qwen3-Embedding-0.6B` is loaded
+for outcome-only semantic analysis. A LaTeX-aware sentence scanner protects
+decimals, math delimiters, environments, and code. Each sentence receives
+auditable multi-label reasoning categories using lexical evidence plus
+category-prototype similarity. A sentence is redundant when its maximum cosine
+similarity to any earlier sentence exceeds 0.65; sensitivity results are also
+reported at 0.60, 0.70, and 0.75.
 
-Generated activations and per-token EOS logits are not copied back to CPU, and
-generation stops as soon as a nonempty `FINAL:` line appears. For the fastest
-plumbing check, keep one MATH-500 problem, one rollout, and core controls as in
-the command above. Increase problems and rollouts only after baseline
-completion and correctness are calibrated.
+The primary efficiency result is the percentage output-token delta from the
+correct baseline; negative is favorable only when correctness is preserved.
+The script also reports reasoning-token deltas, correct-answer sequence log
+odds, category timing, stage transitions, stage revisits, and redundant
+sentence/token fractions. This two-prompt run is a case study, not a
+population-level estimate.
+
+Outputs include:
+
+- `behavioral_helix_two_prompt_design.csv`
+- `behavioral_helix_calibration_trace.csv`
+- `behavioral_helix_natural_traces_layer_<LAYER>.npz`
+- `behavioral_helix_trajectory_model_fit.csv`
+- `behavioral_helix_test_transfer.csv`
+- `behavioral_helix_outcomes.csv`
+- `behavioral_helix_key_results.csv`
+- `behavioral_helix_sentence_audit.csv`
+- `behavioral_helix_semantic_summary.csv`
 
 The smoke and discovery configs use `adapter_neighborhood`: the adapted block
 plus two blocks on either side, together with five depth sentinels. This keeps

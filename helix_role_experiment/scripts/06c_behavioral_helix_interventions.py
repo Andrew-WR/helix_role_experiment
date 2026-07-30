@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import gc
 import json
-import sys
 import time
-from collections import defaultdict
-from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -21,99 +19,147 @@ from helix_role_experiment.behavioral import (
     repeated_sentence_fraction,
 )
 from helix_role_experiment.config import (
-    config_hash,
     ensure_output_dirs,
     load_config,
     seed_everything,
 )
-from helix_role_experiment.controlled_tasks import (
-    ControlledProblem,
-    generate_iterative_problem,
-)
-from helix_role_experiment.counterfactuals import build_progress_position_cross
 from helix_role_experiment.models import huggingface_collector_from_config
-
-
-EPS = 1e-12
-FINAL_LINE_STOP_REGEX = (
-    r"(?im)^\s*\**final(?:\s+answer)?\**\s*:\**\s*\S[^\n]*\n"
+from helix_role_experiment.semantic_progress import (
+    add_baseline_deltas,
+    analyze_condition_sentences,
+    load_sentence_embedder,
+)
+from helix_role_experiment.trajectory_geometry import (
+    centered_transfer_metrics,
+    fit_trajectory_models,
+    match_norm,
 )
 
 
-def load_geometry_module():
-    """Reuse the audited generalized-helix estimator from file 06b."""
-
-    path = Path(__file__).with_name("06b_falsify_generalized_helix.py")
-    spec = importlib.util.spec_from_file_location("_helix_geometry_06b", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not load generalized-helix code from {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+FINAL_LINE_STOP_REGEX = (
+    r"(?ims)</think>.*?^\s*\**final(?:\s+answer)?\**\s*:\**\s*\S[^\n]*"
+    r"(?:\n|<\|im_end\|>)"
+)
+CONTROL_TO_MODEL = {
+    "helix_local_forward": "generalized_helix",
+    "linear_local_forward": "linear",
+    "linear_plus_closed_k1_local_forward": "linear_plus_closed_k1",
+}
 
 
-def wrong_answer(problem: ControlledProblem) -> str:
-    if problem.metadata.get("benchmark") == "math500":
-        return str(int(problem.metadata["numeric_answer"]) + 1)
-    if problem.family == "iterative_state_machine":
-        modulus = int(problem.metadata["modulus"])
-        return str((int(problem.answer) + 1) % modulus)
-    if problem.family == "fictional_ontology":
-        return next(
-            value
-            for value in problem.metadata["entities"]
-            if value != problem.answer
-        )
-    if problem.family == "dependency_graph":
-        return "BLOCKED"
-    raise ValueError(f"unknown controlled family {problem.family!r}")
-
-
-def evaluation_prompt(
-    problem: ControlledProblem,
-    mid_prefix: str,
-    scenario: str,
-    incorrect_answer: str,
-) -> str:
-    suffix = (
-        "\nSolve efficiently without restating the problem. Use at most 12 "
-        "short reasoning lines, check the calculation once, and then end with "
-        "a separate line beginning `FINAL:` followed by only your answer."
+def evaluation_prompt(problem) -> str:
+    return (
+        f"{problem.prompt}\n"
+        "Solve the problem carefully. You may use as much internal reasoning "
+        "as needed. Check the result, then end with a separate line beginning "
+        "`FINAL:` followed by only the answer."
     )
-    if problem.metadata.get("benchmark") == "math500":
-        if scenario == "accelerate":
-            return problem.prompt + suffix
-        if scenario == "repair_wrong_commitment":
-            return (
-                f"{problem.prompt}\nA previous solver proposed "
-                f"`{incorrect_answer}`. Check that candidate and correct it "
-                "if needed."
-                + suffix
-            )
-    if scenario == "accelerate":
-        return mid_prefix + suffix
-    if scenario == "repair_wrong_commitment":
-        return (
-            f"{problem.prompt}\nA previous solver confidently asserted "
-            f"`{incorrect_answer}` without deriving it. Re-evaluate that "
-            "commitment and repair it if necessary."
-            + suffix
+
+
+def wrong_answer(problem) -> str:
+    return str(int(problem.metadata["numeric_answer"]) + 1)
+
+
+def generated_metrics(
+    backend,
+    generated,
+    expected_answer: str,
+    generation_safety_ceiling: int,
+) -> dict[str, Any]:
+    answer, marker_index = extract_final_answer(generated.text)
+    correct = final_answer_is_correct(generated.text, expected_answer)
+    reasoning_tokens = (
+        len(generated.token_ids)
+        if marker_index is None
+        else len(
+            backend.tokenizer(
+                generated.text[:marker_index],
+                add_special_tokens=False,
+            )["input_ids"]
         )
-    raise ValueError(f"unknown scenario {scenario!r}")
+    )
+    return {
+        "correct_final": int(correct),
+        "answer_emitted": int(answer is not None),
+        "extracted_final_answer": answer,
+        "tokens_to_correct_final": (
+            reasoning_tokens
+            if correct
+            else int(generation_safety_ceiling) + 1
+        ),
+        "reasoning_tokens_before_final": reasoning_tokens,
+        "output_tokens": len(generated.token_ids),
+        "normalized_correct_final_position": (
+            reasoning_tokens / max(len(generated.token_ids), 1)
+            if correct
+            else float("nan")
+        ),
+        "hit_safety_ceiling": int(
+            len(generated.token_ids) >= int(generation_safety_ceiling)
+            and answer is None
+            and not generated.reached_eos
+        ),
+        "anchor_sentence_fraction": anchor_sentence_fraction(generated.text),
+        "repeated_sentence_fraction": repeated_sentence_fraction(
+            generated.text
+        ),
+        "repeated_4gram_fraction": repeated_ngram_fraction(
+            list(generated.token_ids),
+            4,
+        ),
+        "reached_eos": int(generated.reached_eos),
+        "generated_text": generated.text,
+    }
 
 
-def pulse_callback(torch, delta: np.ndarray, pulse_tokens: int):
+def require_viable_baseline(
+    label: str,
+    metrics: dict[str, Any],
+    diagnostics_path: Path,
+) -> None:
+    if metrics["answer_emitted"] and metrics["correct_final"]:
+        return
+    write_csv(diagnostics_path, [{"trace": label, **metrics}])
+    raise RuntimeError(
+        f"{label} baseline must emit a correct FINAL answer before this "
+        "two-prompt case study can continue. This fixed prompt is not silently "
+        f"replaced because that would introduce selection bias. Diagnostics: "
+        f"{diagnostics_path}"
+    )
+
+
+def local_transport_callback(
+    torch,
+    primary_curve,
+    control_curve,
+    baseline_tokens: int,
+    progress_step: float,
+    alpha: float,
+):
+    norms: list[float] = []
+
     def callback(_layer, step, hidden):
-        if int(step) >= int(pulse_tokens):
-            return hidden
+        progress = min(float(step) / max(int(baseline_tokens), 1), 1.0)
+        primary = (
+            primary_curve.local_delta(progress, progress_step)
+            * float(alpha)
+        )
+        delta = (
+            primary
+            if control_curve is primary_curve
+            else match_norm(
+                control_curve.local_delta(progress, progress_step),
+                primary,
+            )
+        )
+        norms.append(float(np.linalg.norm(delta)))
         return hidden + torch.as_tensor(
             delta,
             device=hidden.device,
             dtype=hidden.dtype,
         )
 
-    return callback
+    return callback, norms
 
 
 def sequence_log_odds(
@@ -139,695 +185,235 @@ def sequence_log_odds(
     )
 
 
-def answer_logit_direction(
-    backend,
-    correct_answer: str,
-    incorrect_answer: str,
-    target_norm: float,
-) -> np.ndarray:
-    correct_ids = backend.tokenizer(
-        f"\nFINAL: {correct_answer}",
-        add_special_tokens=False,
-    )["input_ids"]
-    incorrect_ids = backend.tokenizer(
-        f"\nFINAL: {incorrect_answer}",
-        add_special_tokens=False,
-    )["input_ids"]
-    shared = 0
-    for left, right in zip(correct_ids, incorrect_ids):
-        if left != right:
-            break
-        shared += 1
-    correct_answer_ids = correct_ids[shared:] or correct_ids[-1:]
-    incorrect_answer_ids = incorrect_ids[shared:] or incorrect_ids[-1:]
-    weights = backend.model.get_output_embeddings().weight.detach()
-    direction = (
-        weights[correct_answer_ids].float().mean(dim=0)
-        - weights[incorrect_answer_ids].float().mean(dim=0)
-    ).cpu().numpy().astype(np.float64)
-    norm = float(np.linalg.norm(direction))
-    if norm <= EPS:
-        raise ValueError("answer-logit positive-control direction collapsed")
-    return direction * (float(target_norm) / norm)
-
-
-def generated_metrics(
-    backend,
-    generated,
-    expected_answer: str,
-    generation_safety_ceiling: int,
-) -> dict:
-    answer, marker_index = extract_final_answer(generated.text)
-    correct = final_answer_is_correct(generated.text, expected_answer)
-    if marker_index is None:
-        reasoning_tokens = len(generated.token_ids)
-    else:
-        reasoning_tokens = len(
-            backend.tokenizer(
-                generated.text[:marker_index],
-                add_special_tokens=False,
-            )["input_ids"]
-        )
-    return {
-        "correct_final": int(correct),
-        "answer_emitted": int(answer is not None),
-        "tokens_to_correct_final": (
-            reasoning_tokens
-            if correct
-            else int(generation_safety_ceiling) + 1
-        ),
-        "reasoning_tokens_before_final": reasoning_tokens,
-        "output_tokens": len(generated.token_ids),
-        "hit_safety_ceiling": int(
-            len(generated.token_ids) >= int(generation_safety_ceiling)
-            and answer is None
-            and not generated.reached_eos
-        ),
-        "anchor_sentence_fraction": anchor_sentence_fraction(generated.text),
-        "repeated_sentence_fraction": repeated_sentence_fraction(
-            generated.text
-        ),
-        "repeated_4gram_fraction": repeated_ngram_fraction(
-            list(generated.token_ids),
-            4,
-        ),
-        "reached_eos": int(generated.reached_eos),
-        "generated_text": generated.text,
-    }
-
-
-def fit_internal_calibration_geometry(
-    backend,
-    geometry_code,
-    config: dict,
-    paths: dict[str, Path],
-    layer: int,
-    problem_count: int,
-    rebuild: bool,
-):
-    """Collect the minimal concise trajectories needed by file 06c itself."""
-
-    seed = int(config["study"]["seed"]) + 660
-    cache_key = config_hash(
-        {
-            "model": config["model"],
-            "layer": layer,
-            "problem_count": problem_count,
-            "seed": seed,
-            "calibration": "iterative_concise_v1",
-        }
-    )
-    cache_path = (
-        paths["tables"]
-        / f"behavioral_helix_internal_calibration_layer_{layer}.npz"
-    )
-    calibration_rng = np.random.default_rng(seed)
-    problems = [
-        generate_iterative_problem(index, calibration_rng)
-        for index in range(problem_count)
-    ]
-    concise_variants = [
-        variant
-        for problem in problems
-        for variant in build_progress_position_cross(problem)
-        if variant.condition == "concise"
-    ]
-    rows = None
-    activations = None
-    token_counts = None
-    cache_complete = False
-    if cache_path.is_file() and not rebuild:
-        try:
-            with np.load(cache_path, allow_pickle=False) as data:
-                if str(data["cache_key"].item()) == cache_key:
-                    rows = json.loads(str(data["rows_json"].item()))
-                    activations = np.asarray(
-                        data["activations"],
-                        dtype=np.float32,
-                    )
-                    token_counts = np.asarray(
-                        data["token_counts"],
-                        dtype=np.float64,
-                    )
-                    cache_complete = bool(data["complete"].item())
-                    if not (
-                        len(rows)
-                        == len(activations)
-                        == len(token_counts)
-                        <= len(concise_variants)
-                    ):
-                        raise ValueError("calibration cache is misaligned")
-                    if (
-                        cache_complete
-                        and len(rows) != len(concise_variants)
-                    ):
-                        raise ValueError(
-                            "complete calibration cache is truncated"
-                        )
-                    print(
-                        (
-                            "Reused"
-                            if cache_complete
-                            else "Resuming"
-                        )
-                        + f" {len(rows)}/{len(concise_variants)} internal "
-                        f"calibration states from {cache_path}",
-                        flush=True,
-                    )
-        except (OSError, KeyError, ValueError, json.JSONDecodeError):
-            print(
-                f"Ignoring incomplete calibration cache {cache_path}",
-                flush=True,
+def add_length_deltas(
+    outcomes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    baseline = next(row for row in outcomes if row["control"] == "baseline")
+    for row in outcomes:
+        for metric in (
+            "output_tokens",
+            "reasoning_tokens_before_final",
+            "tokens_to_correct_final",
+        ):
+            difference = float(row[metric]) - float(baseline[metric])
+            denominator = float(baseline[metric])
+            row[f"delta_{metric}"] = difference
+            row[f"percent_delta_{metric}"] = (
+                100.0 * difference / denominator
+                if denominator
+                else float("nan")
             )
-
-    if rows is None or not cache_complete:
-        if rows is None:
-            rows = []
-            activation_values = []
-            token_values = []
-        else:
-            activation_values = list(activations)
-            token_values = list(token_counts)
-        temporary_cache = cache_path.with_suffix(".tmp.npz")
-        for index in range(len(rows), len(concise_variants)):
-            variant = concise_variants[index]
-            row = asdict(variant)
-            formatted = backend.format_prompt(row["text"])
-            token_count = len(
-                backend.tokenizer(
-                    formatted,
-                    add_special_tokens=True,
-                )["input_ids"]
-            )
-            generated = backend.collect(
-                row["text"],
-                [layer],
-                1,
-                seed + index,
-                temperature=0.0,
-                disable_eos=True,
-                capture_activations=True,
-                capture_eos_logits=True,
-            )
-            row["sentence_count_proxy"] = row["text"].count(".")
-            row["termination_allowed"] = int(
-                row["termination_allowed"]
-            )
-            row["eos_logit"] = generated.eos_logits[-1]
-            for column in geometry_code.OPERATION_COLUMNS:
-                operation = column.removeprefix("operation_")
-                row[column] = int(row["operation"] == operation)
-            rows.append(row)
-            activation_values.append(
-                generated.activations_by_layer[layer][-1]
-            )
-            token_values.append(token_count)
-            activations = np.asarray(
-                activation_values,
-                dtype=np.float32,
-            )
-            token_counts = np.asarray(token_values, dtype=np.float64)
-            np.savez_compressed(
-                temporary_cache,
-                cache_key=np.asarray(cache_key),
-                complete=np.asarray(
-                    len(rows) == len(concise_variants)
-                ),
-                rows_json=np.asarray(json.dumps(rows)),
-                activations=activations.astype(np.float16),
-                token_counts=token_counts,
-            )
-            temporary_cache.replace(cache_path)
-            print(
-                f"Internal calibration {index + 1}/"
-                f"{len(concise_variants)}",
-                flush=True,
-            )
-        print(
-            f"Cached internal calibration at {cache_path}",
-            flush=True,
-        )
-
-    centered = geometry_code.center_within_problem_trajectory(
-        activations,
-        rows,
-    )
-    ridge = float(config["analysis"].get("ridge", 0.001))
-    geometry, selection = geometry_code.fit_geometry(
-        rows,
-        centered,
-        token_counts,
-        ridge,
-    )
-    write_csv(
-        paths["tables"] / "behavioral_helix_calibration_selection.csv",
-        selection,
-    )
-    return geometry, rows
+    return outcomes
 
 
-def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
-    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    for row in rows:
-        grouped[(row["scenario"], row["control"])].append(row)
-    output = []
-    for (scenario, control), values in sorted(grouped.items()):
-        output.append(
+def summarize_key_results(
+    outcomes: list[dict[str, Any]],
+    transfer_rows: list[dict[str, Any]],
+    selection_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    baseline = next(row for row in outcomes if row["control"] == "baseline")
+    rows = []
+    for outcome in outcomes:
+        rows.append(
             {
                 "result_type": "behavioral_condition",
-                "scenario": scenario,
-                "control": control,
-                "sample_count": len(values),
-                "problem_count": len(
-                    {row["problem_id"] for row in values}
-                ),
-                "correct_final_rate": float(
-                    np.mean([row["correct_final"] for row in values])
-                ),
-                "answer_emission_rate": float(
-                    np.mean([row["answer_emitted"] for row in values])
-                ),
-                "mean_tokens_to_correct_final_censored": float(
-                    np.mean(
-                        [row["tokens_to_correct_final"] for row in values]
-                    )
-                ),
-                "mean_reasoning_tokens_before_final": float(
-                    np.mean(
-                        [
-                            row["reasoning_tokens_before_final"]
-                            for row in values
-                        ]
-                    )
-                ),
-                "mean_output_tokens": float(
-                    np.mean([row["output_tokens"] for row in values])
-                ),
-                "mean_anchor_sentence_fraction": float(
-                    np.mean(
-                        [row["anchor_sentence_fraction"] for row in values]
-                    )
-                ),
-                "mean_repeated_sentence_fraction": float(
-                    np.mean(
-                        [row["repeated_sentence_fraction"] for row in values]
-                    )
-                ),
-                "mean_repeated_4gram_fraction": float(
-                    np.mean(
-                        [row["repeated_4gram_fraction"] for row in values]
-                    )
-                ),
-                "mean_sequence_log_odds_correct": float(
-                    np.mean(finite_sequence_scores)
-                    if (
-                        finite_sequence_scores := [
-                            row["sequence_log_odds_correct"]
-                            for row in values
-                            if np.isfinite(
-                                row["sequence_log_odds_correct"]
-                            )
-                        ]
-                    )
-                    else float("nan")
-                ),
+                "control": outcome["control"],
+                "correct_final": outcome["correct_final"],
+                "output_tokens": outcome["output_tokens"],
+                "delta_output_tokens": outcome["delta_output_tokens"],
+                "percent_delta_output_tokens": outcome[
+                    "percent_delta_output_tokens"
+                ],
+                "reasoning_tokens_before_final": outcome[
+                    "reasoning_tokens_before_final"
+                ],
+                "percent_delta_reasoning_tokens_before_final": outcome[
+                    "percent_delta_reasoning_tokens_before_final"
+                ],
+                "sequence_log_odds_correct": outcome[
+                    "sequence_log_odds_correct"
+                ],
+                "mean_intervention_norm": outcome[
+                    "mean_intervention_norm"
+                ],
             }
         )
-
-    assay_differences = np.asarray(
-        [
-            row["positive_control_log_odds"]
-            - row["baseline_log_odds"]
-            for row in assay_rows
-        ],
-        dtype=np.float64,
+    helix = next(
+        row for row in outcomes if row["control"] == "helix_local_forward"
     )
-    sequence_assay_valid = bool(
-        len(assay_differences)
-        and np.median(assay_differences) > 0.5
-        and np.mean(assay_differences > 0) >= 2.0 / 3.0
-    )
-    output.append(
-        {
-            "result_type": "primary_gate",
-            "scenario": "all",
-            "control": "answer_logit_positive_control",
-            "gate": "sequence_assay_has_dynamic_range",
-            "median_sequence_log_odds_improvement": (
-                float(np.median(assay_differences))
-                if len(assay_differences)
-                else float("nan")
-            ),
-            "fraction_positive": (
-                float(np.mean(assay_differences > 0))
-                if len(assay_differences)
-                else float("nan")
-            ),
-            "status": (
-                "assay_valid"
-                if sequence_assay_valid
-                else "assay_invalid"
-            ),
+    comparators = [
+        row
+        for row in outcomes
+        if row["control"]
+        in {
+            "linear_local_forward",
+            "linear_plus_closed_k1_local_forward",
         }
+    ]
+    transfer = next(
+        row
+        for row in transfer_rows
+        if row["model"] == "generalized_helix"
     )
-
-    summary_lookup = {
-        (row["scenario"], row["control"]): row
-        for row in output
-        if row["result_type"] == "behavioral_condition"
+    selected_fit = {
+        row["model"]: row
+        for row in selection_rows
+        if row["selected_within_model"]
     }
-
-    def condition(scenario: str, control: str) -> dict:
-        return summary_lookup[(scenario, control)]
-
-    baseline_generations = [
-        row for row in rows if row["control"] == "baseline"
-    ]
-    baseline_completion_rate = float(
-        np.mean([row["answer_emitted"] for row in baseline_generations])
-    )
-    baseline_cap_rate = float(
-        np.mean(
-            [row["hit_safety_ceiling"] for row in baseline_generations]
-        )
-    )
-    generation_assay_valid = bool(
-        baseline_generations
-        and baseline_completion_rate == 1.0
-        and baseline_cap_rate == 0.0
-    )
-    output.append(
+    helix_fit = selected_fit["generalized_helix"]
+    rows.append(
         {
-            "result_type": "primary_gate",
-            "scenario": "all",
-            "control": "baseline",
-            "gate": "generation_assay_reaches_final_answer",
-            "baseline_answer_emission_rate": baseline_completion_rate,
-            "baseline_safety_ceiling_rate": baseline_cap_rate,
-            "status": (
-                "assay_valid"
-                if generation_assay_valid
-                else "assay_invalid"
+            "result_type": "geometry",
+            "control": "generalized_helix",
+            "selected_turns": helix_fit["turns"],
+            "selected_radius_slope": helix_fit["radius_slope"],
+            "blocked_cv_r2": helix_fit["blocked_cv_r2"],
+            "incremental_blocked_cv_r2_vs_linear": (
+                float(helix_fit["blocked_cv_r2"])
+                - float(selected_fit["linear"]["blocked_cv_r2"])
             ),
-        }
-    )
-    assay_valid = sequence_assay_valid and generation_assay_valid
-
-    acceleration = condition("accelerate", "helix_desired")
-    acceleration_comparators = [
-        condition("accelerate", value)
-        for value in (
-            "baseline",
-            "helix_opposite",
-            "linear_desired",
-            "linear_plus_closed_k1_desired",
-            "norm_matched_random",
-        )
-        if ("accelerate", value) in summary_lookup
-    ]
-    acceleration_survives = bool(
-        assay_valid
-        and acceleration["correct_final_rate"]
-        >= max(row["correct_final_rate"] for row in acceleration_comparators)
-        and acceleration["mean_tokens_to_correct_final_censored"]
-        < min(
-            row["mean_tokens_to_correct_final_censored"]
-            for row in acceleration_comparators
-        )
-        and acceleration["mean_sequence_log_odds_correct"]
-        > condition(
-            "accelerate",
-            "baseline",
-        )["mean_sequence_log_odds_correct"]
-    )
-    output.append(
-        {
-            "result_type": "primary_gate",
-            "scenario": "accelerate",
-            "control": "helix_desired",
-            "gate": "faster_correct_final_answer",
-            "correct_final_rate": acceleration["correct_final_rate"],
-            "best_comparator_correct_rate": max(
-                row["correct_final_rate"]
-                for row in acceleration_comparators
-            ),
-            "mean_tokens_to_correct_final_censored": acceleration[
-                "mean_tokens_to_correct_final_censored"
-            ],
-            "best_comparator_tokens_to_correct": min(
-                row["mean_tokens_to_correct_final_censored"]
-                for row in acceleration_comparators
-            ),
-            "mean_sequence_log_odds_correct": acceleration[
-                "mean_sequence_log_odds_correct"
-            ],
-            "baseline_sequence_log_odds": condition(
-                "accelerate",
-                "baseline",
-            )["mean_sequence_log_odds_correct"],
-            "status": (
-                "survived_falsification"
-                if acceleration_survives
-                else (
-                    "failed_falsification"
-                    if assay_valid
-                    else "inconclusive_assay_invalid"
+            "incremental_blocked_cv_r2_vs_closed_k1": (
+                float(helix_fit["blocked_cv_r2"])
+                - float(
+                    selected_fit["linear_plus_closed_k1"]["blocked_cv_r2"]
                 )
             ),
+            "test_centered_transfer_r2": transfer[
+                "centered_transfer_r2"
+            ],
         }
     )
-
-    repair = condition("repair_wrong_commitment", "helix_desired")
-    repair_comparators = [
-        condition("repair_wrong_commitment", value)
-        for value in (
-            "baseline",
-            "helix_opposite",
-            "linear_desired",
-            "linear_plus_closed_k1_desired",
-            "norm_matched_random",
+    gate_passed = bool(
+        int(helix["correct_final"])
+        and float(helix["output_tokens"]) < float(baseline["output_tokens"])
+        and all(
+            float(helix["output_tokens"]) < float(row["output_tokens"])
+            for row in comparators
+            if int(row["correct_final"])
         )
-        if ("repair_wrong_commitment", value) in summary_lookup
-    ]
-    comparator_reasoning_tokens = float(
-        np.mean(
-            [
-                row["mean_reasoning_tokens_before_final"]
-                for row in repair_comparators
-            ]
-        )
+        and float(helix["sequence_log_odds_correct"])
+        > float(baseline["sequence_log_odds_correct"])
     )
-    comparator_anchor_fraction = float(
-        np.mean(
-            [
-                row["mean_anchor_sentence_fraction"]
-                for row in repair_comparators
-            ]
-        )
-    )
-    comparator_sentence_repetition = float(
-        np.mean(
-            [
-                row["mean_repeated_sentence_fraction"]
-                for row in repair_comparators
-            ]
-        )
-    )
-    comparator_ngram_repetition = float(
-        np.mean(
-            [
-                row["mean_repeated_4gram_fraction"]
-                for row in repair_comparators
-            ]
-        )
-    )
-    induced_reflection = bool(
-        repair["mean_anchor_sentence_fraction"]
-        > comparator_anchor_fraction
-        or repair["mean_repeated_sentence_fraction"]
-        > comparator_sentence_repetition
-        or repair["mean_repeated_4gram_fraction"]
-        > comparator_ngram_repetition
-    )
-    repair_survives = bool(
-        assay_valid
-        and repair["correct_final_rate"]
-        > condition(
-            "repair_wrong_commitment",
-            "baseline",
-        )["correct_final_rate"]
-        and repair["correct_final_rate"]
-        >= max(row["correct_final_rate"] for row in repair_comparators)
-        and repair["mean_reasoning_tokens_before_final"]
-        > comparator_reasoning_tokens
-        and induced_reflection
-    )
-    output.append(
+    rows.append(
         {
             "result_type": "primary_gate",
-            "scenario": "repair_wrong_commitment",
-            "control": "helix_desired",
-            "gate": "slow_reflection_improves_reasoning",
-            "correct_final_rate": repair["correct_final_rate"],
-            "baseline_correct_rate": condition(
-                "repair_wrong_commitment",
-                "baseline",
-            )["correct_final_rate"],
-            "mean_reasoning_tokens_before_final": repair[
-                "mean_reasoning_tokens_before_final"
-            ],
-            "comparator_mean_reasoning_tokens": comparator_reasoning_tokens,
-            "mean_anchor_sentence_fraction": repair[
-                "mean_anchor_sentence_fraction"
-            ],
-            "comparator_mean_anchor_fraction": comparator_anchor_fraction,
-            "mean_repeated_sentence_fraction": repair[
-                "mean_repeated_sentence_fraction"
-            ],
-            "comparator_mean_repeated_sentence_fraction": (
-                comparator_sentence_repetition
-            ),
-            "mean_repeated_4gram_fraction": repair[
-                "mean_repeated_4gram_fraction"
-            ],
-            "comparator_mean_repeated_4gram_fraction": (
-                comparator_ngram_repetition
-            ),
-            "induced_anchor_or_repetition": int(induced_reflection),
+            "control": "helix_local_forward",
+            "gate": "faster_correct_reasoning_than_baseline_and_controls",
             "status": (
-                "survived_falsification"
-                if repair_survives
-                else (
-                    "failed_falsification"
-                    if assay_valid
-                    else "inconclusive_assay_invalid"
-                )
+                "descriptive_pass_single_test_prompt"
+                if gate_passed
+                else "descriptive_fail_single_test_prompt"
             ),
+            "correct_final": helix["correct_final"],
+            "percent_delta_output_tokens": helix[
+                "percent_delta_output_tokens"
+            ],
+            "sequence_log_odds_improvement": (
+                float(helix["sequence_log_odds_correct"])
+                - float(baseline["sequence_log_odds_correct"])
+            ),
+            "test_centered_transfer_r2": transfer[
+                "centered_transfer_r2"
+            ],
         }
     )
-    return output
+    return rows
 
 
-def main() -> None:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Test whether generalized-helix pulses accelerate correct answers "
-            "or induce useful reflective repair"
+            "Fit a generalized helix to one natural MATH-500 reasoning "
+            "trajectory and test local forward transport on a second problem."
         )
     )
     parser.add_argument("--config", required=True)
     parser.add_argument("--layer", type=int, required=True)
     parser.add_argument(
-        "--problems",
-        "--problems-per-family",
-        dest="problems",
-        type=int,
-        default=1,
-        help="Number of held-out MATH-500 problems.",
-    )
-    parser.add_argument(
-        "--calibration-problems",
-        type=int,
-        default=4,
-        help=(
-            "Small synthetic problems used internally to fit the helix. "
-            "Their concise state activations are cached after the first run."
-        ),
-    )
-    parser.add_argument(
-        "--rebuild-internal-calibration",
-        action="store_true",
-        help="Ignore and replace file 06c's own layer calibration cache.",
-    )
-    parser.add_argument(
-        "--benchmark",
-        choices=("math500",),
-        default="math500",
-        help=(
-            "Behavioral task. math500 uses deterministic level 2-3 integer-"
-            "answer MATH-500 items."
-        ),
-    )
-    parser.add_argument(
         "--math500-path",
         default=None,
-        help=(
-            "Optional local MATH-500 test.jsonl. Otherwise it is downloaded "
-            "once from Hugging Face and cached under output.root."
-        ),
+        help="Optional local MATH-500 test.jsonl.",
     )
-    parser.add_argument(
-        "--math500-levels",
-        default="2,3",
-        help="Comma-separated MATH-500 difficulty levels.",
-    )
-    parser.add_argument("--rollouts", type=int, default=1)
-    parser.add_argument(
-        "--generation-safety-ceiling",
-        type=int,
-        default=8192,
-        help=(
-            "Emergency loop guard, not a reasoning budget. Generation stops "
-            "normally at a complete FINAL line or EOS."
-        ),
-    )
-    parser.add_argument("--pulse-tokens", type=int, default=16)
+    parser.add_argument("--math500-level", type=int, default=4)
+    parser.add_argument("--generation-safety-ceiling", type=int, default=8192)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument("--progress-step", type=float, default=0.05)
+    parser.add_argument("--transport-alpha", type=float, default=1.0)
+    parser.add_argument("--blocked-cv-folds", type=int, default=5)
     parser.add_argument(
-        "--controls",
-        choices=("core", "full"),
-        default="core",
-        help=(
-            "core keeps baseline, generalized helix, linear, and closed k=1; "
-            "full also runs opposite and random controls."
-        ),
+        "--embedding-model-id",
+        default="Qwen/Qwen3-Embedding-0.6B",
+    )
+    parser.add_argument("--embedding-device", default="cpu")
+    parser.add_argument(
+        "--skip-semantic-analysis",
+        action="store_true",
+        help="Write causal results without loading the sentence embedder.",
     )
     args = parser.parse_args()
-    if args.problems <= 0:
-        raise ValueError("--problems must be positive")
-    if args.calibration_problems < 3:
-        raise ValueError("--calibration-problems must be at least 3")
-    if args.rollouts <= 0:
-        raise ValueError("--rollouts must be positive")
-    if args.generation_safety_ceiling <= 0 or args.pulse_tokens <= 0:
-        raise ValueError("token limits must be positive")
+    if args.generation_safety_ceiling <= 0:
+        raise ValueError("--generation-safety-ceiling must be positive")
+    if not 0.0 < args.progress_step <= 1.0:
+        raise ValueError("--progress-step must be in (0, 1]")
+    if args.transport_alpha <= 0:
+        raise ValueError("--transport-alpha must be positive")
+    if args.blocked_cv_folds < 2:
+        raise ValueError("--blocked-cv-folds must be at least 2")
     if not 0.0 < args.top_p <= 1.0:
         raise ValueError("--top-p must be in (0, 1]")
     if args.top_k <= 0:
         raise ValueError("--top-k must be positive")
-    try:
-        math500_levels = {
-            int(value.strip())
-            for value in args.math500_levels.split(",")
-            if value.strip()
-        }
-    except ValueError as exc:
-        raise ValueError("--math500-levels must contain integers") from exc
-    if args.benchmark == "math500" and not math500_levels:
-        raise ValueError("--math500-levels cannot be empty")
+    return args
 
-    geometry_code = load_geometry_module()
+
+def main() -> None:
+    args = parse_args()
     config = load_config(args.config)
     paths = ensure_output_dirs(config)
-    rng = seed_everything(int(config["study"]["seed"]) + 663)
-    print(
-        "Standalone 06c: no outputs from files 01-05, 05b, or 06b are read.",
-        flush=True,
-    )
+    seed = int(config["study"]["seed"]) + 663
+    seed_everything(seed)
     math500_path = (
         Path(args.math500_path)
         if args.math500_path
         else paths["root"] / "math500_test.jsonl"
     )
-    evaluation_problems = load_math500_integer_problems(
-        args.problems,
-        math500_levels,
-        int(config["study"]["seed"]) + 663,
+    calibration_problem, test_problem = load_math500_integer_problems(
+        2,
+        {int(args.math500_level)},
+        seed,
         math500_path,
     )
-    print("Loading model for behavioral interventions...", flush=True)
+    design_rows = [
+        {
+            "role": "calibration",
+            "problem_id": calibration_problem.problem_id,
+            "level": calibration_problem.metadata["level"],
+            "subject": calibration_problem.metadata["subject"],
+            "prompt": calibration_problem.prompt,
+            "expected_answer": calibration_problem.answer,
+        },
+        {
+            "role": "test",
+            "problem_id": test_problem.problem_id,
+            "level": test_problem.metadata["level"],
+            "subject": test_problem.metadata["subject"],
+            "prompt": test_problem.prompt,
+            "expected_answer": test_problem.answer,
+        },
+    ]
+    write_csv(
+        paths["tables"] / "behavioral_helix_two_prompt_design.csv",
+        design_rows,
+    )
+    print(
+        "Standalone 06c uses two fixed, disjoint MATH-500 prompts: "
+        f"calibration={calibration_problem.problem_id}; "
+        f"test={test_problem.problem_id}",
+        flush=True,
+    )
+    print("Loading Qwen for natural reasoning traces...", flush=True)
     backend = huggingface_collector_from_config(
         config["model"],
         config["collection"],
@@ -837,403 +423,361 @@ def main() -> None:
         raise ValueError(
             f"layer {layer} is invalid; model has {len(backend.layers)} layers"
         )
-    print(
-        f"Loaded model; testing layer {layer} on "
-        f"{len(evaluation_problems)} MATH-500 problems",
-        flush=True,
+
+    calibration_prompt = evaluation_prompt(calibration_problem)
+    started = time.perf_counter()
+    calibration_generation = backend.collect(
+        calibration_prompt,
+        [layer],
+        args.generation_safety_ceiling,
+        seed,
+        temperature=args.temperature,
+        disable_eos=False,
+        intervention=None,
+        capture_activations=True,
+        capture_eos_logits=False,
+        stop_regex=FINAL_LINE_STOP_REGEX,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        stop_check_interval=8,
     )
-    geometry, _calibration_rows = fit_internal_calibration_geometry(
+    calibration_metrics = generated_metrics(
         backend,
-        geometry_code,
-        config,
-        paths,
-        layer,
-        args.calibration_problems,
-        args.rebuild_internal_calibration,
+        calibration_generation,
+        calibration_problem.answer,
+        args.generation_safety_ceiling,
     )
-
-    torch = backend.torch
-    outcomes: list[dict] = []
-    assay_rows: list[dict] = []
-    baseline_pilots = {}
-    pilot_rows = []
-    for problem_index, problem in enumerate(evaluation_problems):
-        incorrect = wrong_answer(problem)
-        for scenario in ("accelerate", "repair_wrong_commitment"):
-            prompt = evaluation_prompt(
-                problem,
-                "",
-                scenario,
-                incorrect,
-            )
-            for rollout in range(args.rollouts):
-                seed = (
-                    int(config["study"]["seed"])
-                    + 1000 * problem_index
-                    + 100 * (scenario == "repair_wrong_commitment")
-                    + rollout
-                )
-                started = time.perf_counter()
-                generated = backend.collect(
-                    prompt,
-                    [layer],
-                    args.generation_safety_ceiling,
-                    seed,
-                    temperature=args.temperature,
-                    disable_eos=False,
-                    intervention=None,
-                    capture_activations=False,
-                    capture_eos_logits=False,
-                    stop_regex=FINAL_LINE_STOP_REGEX,
-                    top_p=args.top_p,
-                    top_k=args.top_k,
-                    stop_check_interval=8,
-                )
-                metrics = generated_metrics(
-                    backend,
-                    generated,
-                    problem.answer,
-                    args.generation_safety_ceiling,
-                )
-                baseline_pilots[
-                    (problem.problem_id, scenario, rollout)
-                ] = generated
-                pilot_rows.append(
-                    {
-                        "problem_id": problem.problem_id,
-                        "family": problem.family,
-                        "scenario": scenario,
-                        "rollout": rollout,
-                        "seed": seed,
-                        "benchmark": args.benchmark,
-                        "benchmark_level": problem.metadata.get("level"),
-                        "generation_safety_ceiling": (
-                            args.generation_safety_ceiling
-                        ),
-                        "temperature": args.temperature,
-                        "top_p": args.top_p,
-                        "top_k": args.top_k,
-                        **metrics,
-                    }
-                )
-                print(
-                    f"Baseline viability: {problem.problem_id} {scenario} "
-                    f"rollout {rollout} "
-                    f"({len(generated.token_ids)} tokens, "
-                    f"{time.perf_counter() - started:.1f}s)",
-                    flush=True,
-                )
-    failed_pilots = [
-        row for row in pilot_rows if not int(row["answer_emitted"])
-    ]
-    if failed_pilots:
-        diagnostic_path = (
-            paths["tables"] / "behavioral_helix_baseline_pilot.csv"
-        )
-        write_csv(diagnostic_path, pilot_rows)
-        failed_labels = ", ".join(
-            f"{row['problem_id']}/{row['scenario']}/r{row['rollout']}"
-            for row in failed_pilots
-        )
-        raise RuntimeError(
-            "Behavioral assay aborted before interventions: the unmodified "
-            "baseline reached the emergency generation safety ceiling "
-            f"({args.generation_safety_ceiling} tokens) without FINAL for "
-            f"{failed_labels}. Treat this as a looping or prompt-calibration "
-            "failure rather than increasing the ceiling. "
-            f"Diagnostics: {diagnostic_path}"
-        )
+    require_viable_baseline(
+        "calibration",
+        calibration_metrics,
+        paths["tables"] / "behavioral_helix_calibration_diagnostic.csv",
+    )
     print(
-        "Baseline viability passed for every prompt; starting causal assays.",
+        f"Calibration trace: {len(calibration_generation.token_ids)} tokens "
+        f"in {time.perf_counter() - started:.1f}s",
         flush=True,
     )
-    control_count = 4 if args.controls == "core" else 6
-    total_generations = (
-        len(evaluation_problems) * 2 * args.rollouts * control_count
-    )
-    completed_generations = 0
-
-    initial_progress = 0.0
-    final_progress = 1.0
-    geometry_family = "iterative_state_machine"
-    for problem_index, problem in enumerate(evaluation_problems):
-
-        def helix_delta(
-            desired: float,
-            source: float,
-        ) -> np.ndarray:
-            return geometry.helix_value(
-                geometry_family,
-                desired,
-            ) - geometry.helix_value(geometry_family, source)
-
-        def linear_delta(
-            desired: float,
-            source: float,
-        ) -> np.ndarray:
-            return geometry.axial_value(desired) - geometry.axial_value(
-                source
-            )
-
-        def closed_delta(
-            desired: float,
-            source: float,
-        ) -> np.ndarray:
-            return linear_delta(desired, source) + (
-                geometry.closed_after_axis_value(
-                    geometry_family,
-                    desired,
-                )
-                - geometry.closed_after_axis_value(
-                    geometry_family,
-                    source,
-                )
-            )
-
-        model_directions = [
-            geometry.axial_direction,
-            *[
-                coefficient
-                for model in geometry.rotation_by_family.values()
-                for coefficient in model.coefficients
-            ],
-        ]
-        incorrect = wrong_answer(problem)
-        for scenario in ("accelerate", "repair_wrong_commitment"):
-            source_progress = (
-                initial_progress
-                if scenario == "accelerate"
-                else final_progress
-            )
-            desired_progress = (
-                final_progress
-                if scenario == "accelerate"
-                else initial_progress
-            )
-            desired = helix_delta(desired_progress, source_progress)
-            desired_norm = float(np.linalg.norm(desired))
-            if desired_norm <= EPS:
-                raise ValueError(
-                    f"collapsed helix delta for {problem.problem_id}"
-                )
-            opposite = (
-                -desired
-            )
-            linear = geometry_code.match_norm(
-                linear_delta(desired_progress, source_progress),
-                desired_norm,
-            )[0]
-            closed = geometry_code.match_norm(
-                closed_delta(desired_progress, source_progress),
-                desired_norm,
-            )[0]
-            random_delta = geometry_code.random_orthogonal_delta(
-                len(desired),
-                model_directions,
-                desired_norm,
-                rng,
-            )
-            controls = {
-                "baseline": None,
-                "helix_desired": desired,
-                "helix_opposite": opposite,
-                "linear_desired": linear,
-                "linear_plus_closed_k1_desired": closed,
-                "norm_matched_random": random_delta,
+    write_csv(
+        paths["tables"] / "behavioral_helix_calibration_trace.csv",
+        [
+            {
+                "layer": layer,
+                "problem_id": calibration_problem.problem_id,
+                "seed": seed,
+                **calibration_metrics,
             }
-            if args.controls == "core":
-                controls = {
-                    key: controls[key]
-                    for key in (
-                        "baseline",
-                        "helix_desired",
-                        "linear_desired",
-                        "linear_plus_closed_k1_desired",
-                    )
-                }
-            prompt = evaluation_prompt(
-                problem,
-                "",
-                scenario,
-                incorrect,
-            )
-            sequence_scores = {}
-            for control in ("baseline", "helix_desired"):
-                delta = controls[control]
-                callback = (
-                    None
-                    if delta is None
-                    else pulse_callback(torch, delta, args.pulse_tokens)
-                )
-                sequence_scores[control] = sequence_log_odds(
-                    backend,
-                    prompt,
-                    problem.answer,
-                    incorrect,
-                    layer,
-                    callback,
-                )
-                print(
-                    f"Sequence score: {problem.problem_id} {scenario} "
-                    f"{control}",
-                    flush=True,
-                )
+        ],
+    )
+    curves, selection_rows = fit_trajectory_models(
+        calibration_generation.activations_by_layer[layer],
+        ridge=float(config["analysis"].get("ridge", 0.001)),
+        fold_count=args.blocked_cv_folds,
+    )
+    write_csv(
+        paths["tables"] / "behavioral_helix_trajectory_model_fit.csv",
+        selection_rows,
+    )
 
-            if scenario == "accelerate":
-                positive_delta = answer_logit_direction(
-                    backend,
-                    problem.answer,
-                    incorrect,
-                    desired_norm,
-                )
-                positive_score = sequence_log_odds(
-                    backend,
-                    prompt,
-                    problem.answer,
-                    incorrect,
-                    layer,
-                    pulse_callback(
-                        torch,
-                        positive_delta,
-                        args.pulse_tokens,
-                    ),
-                )
-                assay_rows.append(
-                    {
-                        "problem_id": problem.problem_id,
-                        "family": problem.family,
-                        "scenario": scenario,
-                        "baseline_log_odds": sequence_scores["baseline"],
-                        "positive_control_log_odds": positive_score,
-                    }
-                )
-                print(
-                    f"Positive-control score: {problem.problem_id}",
-                    flush=True,
-                )
+    test_prompt = evaluation_prompt(test_problem)
+    test_seed = seed + 1000
+    started = time.perf_counter()
+    baseline_generation = backend.collect(
+        test_prompt,
+        [layer],
+        args.generation_safety_ceiling,
+        test_seed,
+        temperature=args.temperature,
+        disable_eos=False,
+        intervention=None,
+        capture_activations=True,
+        capture_eos_logits=False,
+        stop_regex=FINAL_LINE_STOP_REGEX,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        stop_check_interval=8,
+    )
+    baseline_metrics = generated_metrics(
+        backend,
+        baseline_generation,
+        test_problem.answer,
+        args.generation_safety_ceiling,
+    )
+    require_viable_baseline(
+        "test",
+        baseline_metrics,
+        paths["tables"] / "behavioral_helix_test_diagnostic.csv",
+    )
+    baseline_tokens = len(baseline_generation.token_ids)
+    print(
+        f"Test baseline: {baseline_tokens} tokens in "
+        f"{time.perf_counter() - started:.1f}s",
+        flush=True,
+    )
+    transfer_rows = []
+    for model, curve in curves.items():
+        transfer_rows.append(
+            {
+                "calibration_problem_id": calibration_problem.problem_id,
+                "test_problem_id": test_problem.problem_id,
+                "layer": layer,
+                "model": model,
+                **centered_transfer_metrics(
+                    curve,
+                    baseline_generation.activations_by_layer[layer],
+                ),
+            }
+        )
+    write_csv(
+        paths["tables"] / "behavioral_helix_test_transfer.csv",
+        transfer_rows,
+    )
+    trace_path = (
+        paths["tables"] / f"behavioral_helix_natural_traces_layer_{layer}.npz"
+    )
+    temporary_trace_path = trace_path.with_suffix(".tmp.npz")
+    np.savez_compressed(
+        temporary_trace_path,
+        calibration_activations=np.asarray(
+            calibration_generation.activations_by_layer[layer],
+            dtype=np.float16,
+        ),
+        calibration_token_ids=np.asarray(
+            calibration_generation.token_ids,
+            dtype=np.int64,
+        ),
+        calibration_progress=np.linspace(
+            0.0,
+            1.0,
+            len(calibration_generation.token_ids),
+            dtype=np.float64,
+        ),
+        test_baseline_activations=np.asarray(
+            baseline_generation.activations_by_layer[layer],
+            dtype=np.float16,
+        ),
+        test_baseline_token_ids=np.asarray(
+            baseline_generation.token_ids,
+            dtype=np.int64,
+        ),
+        test_baseline_progress=np.arange(
+            len(baseline_generation.token_ids),
+            dtype=np.float64,
+        )
+        / max(len(baseline_generation.token_ids), 1),
+    )
+    temporary_trace_path.replace(trace_path)
 
-            for rollout in range(args.rollouts):
-                seed = (
-                    int(config["study"]["seed"])
-                    + 1000 * problem_index
-                    + 100 * (scenario == "repair_wrong_commitment")
-                    + rollout
-                )
-                for control, delta in controls.items():
-                    started = time.perf_counter()
-                    callback = (
-                        None
-                        if delta is None
-                        else pulse_callback(
-                            torch,
-                            delta,
-                            args.pulse_tokens,
-                        )
-                    )
-                    if control == "baseline":
-                        generated = baseline_pilots[
-                            (problem.problem_id, scenario, rollout)
-                        ]
-                    else:
-                        generated = backend.collect(
-                            prompt,
-                            [layer],
-                            args.generation_safety_ceiling,
-                            seed,
-                            temperature=args.temperature,
-                            disable_eos=False,
-                            intervention=callback,
-                            capture_activations=False,
-                            capture_eos_logits=False,
-                            stop_regex=FINAL_LINE_STOP_REGEX,
-                            top_p=args.top_p,
-                            top_k=args.top_k,
-                            stop_check_interval=8,
-                        )
-                    completed_generations += 1
-                    outcomes.append(
-                        {
-                            "layer": layer,
-                            "problem_id": problem.problem_id,
-                            "family": problem.family,
-                            "scenario": scenario,
-                            "rollout": rollout,
-                            "seed": seed,
-                            "control": control,
-                            "benchmark": args.benchmark,
-                            "benchmark_level": problem.metadata.get("level"),
-                            "geometry_calibration_problems": (
-                                args.calibration_problems
-                            ),
-                            "source_progress": source_progress,
-                            "desired_progress": desired_progress,
-                            "pulse_tokens": args.pulse_tokens,
-                            "generation_safety_ceiling": (
-                                args.generation_safety_ceiling
-                            ),
-                            "temperature": args.temperature,
-                            "top_p": args.top_p,
-                            "top_k": args.top_k,
-                            "chat_template_used": int(
-                                bool(
-                                    getattr(
-                                        backend.tokenizer,
-                                        "chat_template",
-                                        None,
-                                    )
-                                )
-                            ),
-                            "thinking_mode_requested": (
-                                backend.chat_template_kwargs.get(
-                                    "enable_thinking"
-                                )
-                            ),
-                            "intervention_norm": (
-                                0.0
-                                if delta is None
-                                else float(np.linalg.norm(delta))
-                            ),
-                            "sequence_log_odds_correct": sequence_scores.get(
-                                control,
-                                float("nan"),
-                            ),
-                            **generated_metrics(
-                                backend,
-                                generated,
-                                problem.answer,
-                                args.generation_safety_ceiling,
-                            ),
-                        }
-                    )
-                    print(
-                        f"Generation {completed_generations}/"
-                        f"{total_generations}: {problem.problem_id} "
-                        f"{scenario} {control} "
-                        f"({len(generated.token_ids)} tokens, "
-                        f"{time.perf_counter() - started:.1f}s)",
-                        flush=True,
-                    )
-            print(
-                f"Behavioral helix: {problem.problem_id} {scenario} done",
-                flush=True,
-            )
+    primary_curve = curves["generalized_helix"]
+    torch = backend.torch
+    sequence_scores = {
+        "baseline": sequence_log_odds(
+            backend,
+            test_prompt,
+            test_problem.answer,
+            wrong_answer(test_problem),
+            layer,
+            None,
+        )
+    }
+    outcomes = [
+        {
+            "layer": layer,
+            "calibration_problem_id": calibration_problem.problem_id,
+            "problem_id": test_problem.problem_id,
+            "benchmark": "math500",
+            "benchmark_level": test_problem.metadata["level"],
+            "seed": test_seed,
+            "control": "baseline",
+            "reference_baseline_tokens": baseline_tokens,
+            "progress_definition": "min(t/T_baseline,1)",
+            "progress_step": args.progress_step,
+            "transport_alpha": args.transport_alpha,
+            "mean_intervention_norm": 0.0,
+            "max_intervention_norm": 0.0,
+            "sequence_log_odds_correct": sequence_scores["baseline"],
+            "chat_template_used": int(
+                bool(getattr(backend.tokenizer, "chat_template", None))
+            ),
+            "thinking_mode_requested": backend.chat_template_kwargs.get(
+                "enable_thinking"
+            ),
+            **baseline_metrics,
+        }
+    ]
+    for control, model in CONTROL_TO_MODEL.items():
+        score_callback, _ = local_transport_callback(
+            torch,
+            primary_curve,
+            curves[model],
+            baseline_tokens,
+            args.progress_step,
+            args.transport_alpha,
+        )
+        sequence_scores[control] = sequence_log_odds(
+            backend,
+            test_prompt,
+            test_problem.answer,
+            wrong_answer(test_problem),
+            layer,
+            score_callback,
+        )
+        callback, intervention_norms = local_transport_callback(
+            torch,
+            primary_curve,
+            curves[model],
+            baseline_tokens,
+            args.progress_step,
+            args.transport_alpha,
+        )
+        started = time.perf_counter()
+        generated = backend.collect(
+            test_prompt,
+            [layer],
+            args.generation_safety_ceiling,
+            test_seed,
+            temperature=args.temperature,
+            disable_eos=False,
+            intervention=callback,
+            capture_activations=False,
+            capture_eos_logits=False,
+            stop_regex=FINAL_LINE_STOP_REGEX,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            stop_check_interval=8,
+        )
+        metrics = generated_metrics(
+            backend,
+            generated,
+            test_problem.answer,
+            args.generation_safety_ceiling,
+        )
+        outcomes.append(
+            {
+                "layer": layer,
+                "calibration_problem_id": calibration_problem.problem_id,
+                "problem_id": test_problem.problem_id,
+                "benchmark": "math500",
+                "benchmark_level": test_problem.metadata["level"],
+                "seed": test_seed,
+                "control": control,
+                "reference_baseline_tokens": baseline_tokens,
+                "progress_definition": "min(t/T_baseline,1)",
+                "progress_step": args.progress_step,
+                "transport_alpha": args.transport_alpha,
+                "mean_intervention_norm": float(
+                    np.mean(intervention_norms)
+                ),
+                "max_intervention_norm": float(
+                    np.max(intervention_norms)
+                ),
+                "sequence_log_odds_correct": sequence_scores[control],
+                "chat_template_used": int(
+                    bool(getattr(backend.tokenizer, "chat_template", None))
+                ),
+                "thinking_mode_requested": backend.chat_template_kwargs.get(
+                    "enable_thinking"
+                ),
+                **metrics,
+            }
+        )
+        print(
+            f"{control}: {len(generated.token_ids)} tokens, "
+            f"correct={metrics['correct_final']}, "
+            f"{time.perf_counter() - started:.1f}s",
+            flush=True,
+        )
 
-    summary = summarize(outcomes, assay_rows)
+    outcomes = add_length_deltas(outcomes)
+    key_results = summarize_key_results(
+        outcomes,
+        transfer_rows,
+        selection_rows,
+    )
     write_csv(
         paths["tables"] / "behavioral_helix_outcomes.csv",
         outcomes,
     )
     write_csv(
         paths["tables"] / "behavioral_helix_key_results.csv",
-        summary,
+        key_results,
     )
-    key = [row for row in summary if row["result_type"] == "primary_gate"]
-    print(json.dumps(key, indent=2), flush=True)
+
+    if not args.skip_semantic_analysis:
+        generation_tokenizer = backend.tokenizer
+        del backend
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print(
+            f"Loading {args.embedding_model_id} on "
+            f"{args.embedding_device} for semantic outcomes...",
+            flush=True,
+        )
+        sentence_model = load_sentence_embedder(
+            args.embedding_model_id,
+            args.embedding_device,
+        )
+        sentence_rows = []
+        semantic_summaries = []
+        for outcome in outcomes:
+            rows, summary = analyze_condition_sentences(
+                sentence_model,
+                generation_tokenizer,
+                outcome["control"],
+                outcome["generated_text"],
+                int(outcome["output_tokens"]),
+            )
+            sentence_rows.extend(rows)
+            semantic_summaries.append(summary)
+        semantic_summaries = add_baseline_deltas(semantic_summaries)
+        for summary in semantic_summaries:
+            key_results.append(
+                {
+                    "result_type": "semantic_condition",
+                    "control": summary["control"],
+                    "redundant_sentence_count_0.65": summary[
+                        "redundant_sentence_count_0.65"
+                    ],
+                    "redundant_sentence_rate_0.65": summary[
+                        "redundant_sentence_rate_0.65"
+                    ],
+                    "delta_redundant_sentence_count_0.65": summary[
+                        "delta_redundant_sentence_count_0.65"
+                    ],
+                    "delta_redundant_sentence_rate_0.65": summary[
+                        "delta_redundant_sentence_rate_0.65"
+                    ],
+                    "backward_stage_transitions": summary[
+                        "backward_stage_transitions"
+                    ],
+                    "stage_revisits": summary["stage_revisits"],
+                }
+            )
+        write_csv(
+            paths["tables"] / "behavioral_helix_sentence_audit.csv",
+            sentence_rows,
+        )
+        write_csv(
+            paths["tables"] / "behavioral_helix_semantic_summary.csv",
+            semantic_summaries,
+        )
+        write_csv(
+            paths["tables"] / "behavioral_helix_key_results.csv",
+            key_results,
+        )
+
     print(
-        "Wrote the two behavioral-helix result tables to "
-        f"{paths['tables']}",
+        json.dumps(
+            [
+                row
+                for row in key_results
+                if row["result_type"] == "primary_gate"
+            ],
+            indent=2,
+        ),
         flush=True,
     )
+    print(f"Wrote file 06c results to {paths['tables']}", flush=True)
 
 
 if __name__ == "__main__":

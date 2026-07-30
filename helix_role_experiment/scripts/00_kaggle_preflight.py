@@ -54,11 +54,19 @@ def main() -> None:
             "peft",
             "bitsandbytes",
             "safetensors",
+            "sentence_transformers",
         )
     }
     missing = [
         name
-        for name in ("torch", "transformers", "accelerate", "peft", "bitsandbytes")
+        for name in (
+            "torch",
+            "transformers",
+            "accelerate",
+            "peft",
+            "bitsandbytes",
+            "sentence_transformers",
+        )
         if packages[name] is None
     ]
     if missing:

@@ -6,6 +6,7 @@ from helix_role_experiment.behavioral import (
     final_answer_is_correct,
     repeated_ngram_fraction,
     repeated_sentence_fraction,
+    split_sentences,
 )
 
 
@@ -19,6 +20,9 @@ class BehavioralTests(unittest.TestCase):
         self.assertFalse(final_answer_is_correct("The result might be 2.", "2"))
         self.assertTrue(
             final_answer_is_correct(r"FINAL: \boxed{42}", "42")
+        )
+        self.assertTrue(
+            final_answer_is_correct("FINAL: 2<|im_end|>", "2")
         )
 
     def test_anchor_and_repetition_metrics(self):
@@ -35,6 +39,21 @@ class BehavioralTests(unittest.TestCase):
 
     def test_short_ngram_sequence_is_not_repetition(self):
         self.assertEqual(repeated_ngram_fraction([1, 2, 3]), 0.0)
+
+    def test_sentence_splitter_protects_math_decimals_and_latex(self):
+        text = (
+            r"Let x=3.14 and use $f(x)=x^2;\ x>0$. "
+            r"Compute it; then verify! FINAL: \boxed{9.8596}"
+        )
+        self.assertEqual(
+            split_sentences(text),
+            [
+                r"Let x=3.14 and use $f(x)=x^2;\ x>0$.",
+                "Compute it;",
+                "then verify!",
+                r"FINAL: \boxed{9.8596}",
+            ],
+        )
 
 
 if __name__ == "__main__":
