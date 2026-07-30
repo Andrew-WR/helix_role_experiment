@@ -165,8 +165,8 @@ python scripts/06b_falsify_generalized_helix.py \
   --layers 51,55,59 \
   --pairs-per-family 2
 python scripts/06c_behavioral_helix_interventions.py \
-  --config configs/qwen_27b_kaggle_smoke.json \
-  --layer 63 \
+  --config configs/qwen_9b_base_kaggle_smoke.json \
+  --layer 31 \
   --math500-level 4 \
   --generation-safety-ceiling 8192 \
   --progress-step 0.05 \
@@ -238,6 +238,12 @@ selects two fixed, disjoint, level-4 integer-answer MATH-500 problems from the
 study seed and writes their identities before generation. The first is the
 calibration problem; the second is the test problem. Neither is silently
 replaced if Qwen fails it.
+
+The resource-limited default uses the adapter-disabled
+`Qwen/Qwen3.5-9B` checkpoint through
+`configs/qwen_9b_base_kaggle_smoke.json` and tests its last text layer, 31.
+The existing Qwen3.6-27B LoRA is architecture-specific and must not be attached
+to this 9B checkpoint.
 
 The calibration run is a complete natural Qwen reasoning rollout. File 06c
 records the requested layer at every generated output token and defines

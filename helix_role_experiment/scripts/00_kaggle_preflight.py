@@ -92,25 +92,30 @@ def main() -> None:
     from peft import PeftConfig
 
     adapter_path = resolve_adapter_path(model_config)
-    if not adapter_path:
-        raise ValueError("model.adapter_path is required for the Qwen Kaggle configs")
-    adapter = Path(adapter_path)
-    if not adapter.is_dir():
-        raise FileNotFoundError(
-            f"adapter directory does not exist: {adapter}. Attach the Kaggle model "
-            "input and verify its versioned path."
+    adapter = Path(adapter_path) if adapter_path else None
+    adapter_config = None
+    if adapter is not None:
+        if not adapter.is_dir():
+            raise FileNotFoundError(
+                f"adapter directory does not exist: {adapter}. Attach the "
+                "Kaggle model input and verify its versioned path."
+            )
+        adapter_config_path = adapter / "adapter_config.json"
+        if not adapter_config_path.is_file():
+            raise FileNotFoundError(
+                f"adapter_config.json is missing from {adapter}; upload the "
+                "complete PEFT save_pretrained directory"
+            )
+        adapter_config = PeftConfig.from_pretrained(str(adapter))
+    elif model_config.get("adapter_enabled"):
+        raise ValueError(
+            "model.adapter_enabled is true but no adapter path is available"
         )
-    adapter_config_path = adapter / "adapter_config.json"
-    if not adapter_config_path.is_file():
-        raise FileNotFoundError(
-            f"adapter_config.json is missing from {adapter}; upload the complete "
-            "PEFT save_pretrained directory"
-        )
-    adapter_config = PeftConfig.from_pretrained(str(adapter))
     configured_id = model_config.get("id")
     base_model_id = (
         adapter_config.base_model_name_or_path
-        if configured_id in ("auto_from_adapter", "", None)
+        if adapter_config is not None
+        and configured_id in ("auto_from_adapter", "", None)
         else configured_id
     )
     if not base_model_id or str(base_model_id).startswith("REQUIRED_"):
@@ -157,10 +162,14 @@ def main() -> None:
     report = {
         "config": args.config,
         "packages": packages,
-        "adapter_path": str(adapter),
-        "adapter_enabled": bool(model_config.get("adapter_enabled", True)),
-        "adapter_target_layers": infer_adapter_target_layers(
-            adapter_config, adapter
+        "adapter_path": str(adapter) if adapter is not None else None,
+        "adapter_enabled": bool(
+            adapter is not None and model_config.get("adapter_enabled", True)
+        ),
+        "adapter_target_layers": (
+            infer_adapter_target_layers(adapter_config, adapter)
+            if adapter_config is not None and adapter is not None
+            else []
         ),
         "base_model_id": base_model_id,
         "base_model_config": hub_config,
@@ -179,7 +188,7 @@ def main() -> None:
             "WARNING: fewer than two CUDA GPUs are visible. Confirm Kaggle "
             "Accelerator is set to GPU T4 x2."
         )
-    if not report["adapter_target_layers"]:
+    if adapter is not None and not report["adapter_target_layers"]:
         print(
             "WARNING: adapter_config.json does not declare layers_to_transform; "
             "layers='adapter_neighborhood' cannot be resolved."

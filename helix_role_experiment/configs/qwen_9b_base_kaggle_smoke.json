@@ -1,0 +1,82 @@
+{
+  "study": {
+    "name": "qwen_9b_base_kaggle_smoke",
+    "seed": 1729,
+    "stage": 1
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "Qwen/Qwen3.5-9B",
+    "revision": null,
+    "tokenizer_revision": null,
+    "device": "auto",
+    "dtype": "float16",
+    "trust_remote_code": false,
+    "adapter_path": null,
+    "adapter_fallback_paths": [],
+    "adapter_enabled": false,
+    "chat_template_kwargs": {"enable_thinking": true},
+    "low_cpu_mem_usage": true,
+    "attn_implementation": "sdpa",
+    "max_memory": {
+      "0": "15GiB",
+      "1": "15GiB",
+      "cpu": "16GiB"
+    },
+    "quantization": {
+      "load_in_4bit": true,
+      "bnb_4bit_quant_type": "nf4",
+      "bnb_4bit_use_double_quant": true,
+      "bnb_4bit_compute_dtype": "float16"
+    }
+  },
+  "tasks": {
+    "problems_per_family": 2,
+    "natural_jsonl": null
+  },
+  "collection": {
+    "layers": "all",
+    "max_new_tokens": 128,
+    "temperature": 0.0,
+    "synthetic_base_length": 28,
+    "synthetic_length_jitter": 17,
+    "observational_probe_tokens": 1,
+    "continuations_per_condition": 1,
+    "batch_size": 1,
+    "activation_dtype": "float16",
+    "resumable_shard_size": 8
+  },
+  "audit": {
+    "null_draws": 4
+  },
+  "subspace": {
+    "ridge_grid": [0.0001, 0.001, 0.01, 0.1],
+    "random_plane_draws": 8,
+    "iterative_dimension_threshold": 512,
+    "cg_tolerance": 1e-5,
+    "cg_max_iterations": 100
+  },
+  "counterfactuals": {
+    "position_reference_tokens": 512,
+    "max_prefix_proxy_tokens": 128,
+    "token_match_tolerance": 4,
+    "perplexity_match_tolerance": 0.25
+  },
+  "interventions": {
+    "max_pairs_per_family_layer": 4,
+    "rotation_deltas": [-0.3926990817, 0.3926990817],
+    "continuations_per_condition": 1,
+    "fixed_continuation_tokens": 32,
+    "eos_logit_tolerance": 0.1
+  },
+  "analysis": {
+    "minimum_trace_length": 8,
+    "radius_quantile": 0.1,
+    "bootstrap_draws": 200,
+    "cv_folds": 3,
+    "ridge": 0.001
+  },
+  "output": {
+    "root": "/kaggle/working/qwen9b_base_smoke"
+  }
+}
