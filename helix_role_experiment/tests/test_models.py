@@ -1,7 +1,9 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from helix_role_experiment.benchmarks import load_math500_integer_problems
 from helix_role_experiment.config import config_hash
 from helix_role_experiment.models import (
     HuggingFaceTraceCollector,
@@ -10,6 +12,46 @@ from helix_role_experiment.models import (
 
 
 class ModelConfigurationTests(unittest.TestCase):
+    def test_math500_loader_selects_exactly_scoreable_levels(self):
+        rows = [
+            {
+                "problem": "Compute 40 + 2.",
+                "answer": "42",
+                "level": 2,
+                "subject": "Prealgebra",
+                "unique_id": "accepted",
+            },
+            {
+                "problem": "Give a symbolic result.",
+                "answer": r"\frac{1}{2}",
+                "level": 2,
+                "subject": "Algebra",
+                "unique_id": "symbolic",
+            },
+            {
+                "problem": "Too difficult.",
+                "answer": "7",
+                "level": 5,
+                "subject": "Number Theory",
+                "unique_id": "wrong-level",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "math500.jsonl"
+            path.write_text(
+                "\n".join(json.dumps(row) for row in rows),
+                encoding="utf-8",
+            )
+            selected = load_math500_integer_problems(
+                1,
+                {2, 3},
+                17,
+                path,
+            )
+        self.assertEqual(selected[0].problem_id, "math500-accepted")
+        self.assertEqual(selected[0].answer, "42")
+        self.assertEqual(selected[0].metadata["benchmark"], "math500")
+
     def test_chat_template_receives_explicit_thinking_mode(self):
         calls = []
 

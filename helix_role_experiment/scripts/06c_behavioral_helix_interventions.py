@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from _common import parse_layer_spec, read_csv, write_csv
+from helix_role_experiment.benchmarks import load_math500_integer_problems
 from helix_role_experiment.behavioral import (
     anchor_sentence_fraction,
     extract_final_answer,
@@ -51,6 +52,8 @@ def load_geometry_module():
 
 
 def wrong_answer(problem: ControlledProblem) -> str:
+    if problem.metadata.get("benchmark") == "math500":
+        return str(int(problem.metadata["numeric_answer"]) + 1)
     if problem.family == "iterative_state_machine":
         modulus = int(problem.metadata["modulus"])
         return str((int(problem.answer) + 1) % modulus)
@@ -72,10 +75,20 @@ def evaluation_prompt(
     incorrect_answer: str,
 ) -> str:
     suffix = (
-        "\nContinue the reasoning from this state. Think for as long as needed. "
-        "When ready, end with a separate line beginning `FINAL:` followed by "
-        "only your answer."
+        "\nSolve efficiently without restating the problem. Use at most 12 "
+        "short reasoning lines, check the calculation once, and then end with "
+        "a separate line beginning `FINAL:` followed by only your answer."
     )
+    if problem.metadata.get("benchmark") == "math500":
+        if scenario == "accelerate":
+            return problem.prompt + suffix
+        if scenario == "repair_wrong_commitment":
+            return (
+                f"{problem.prompt}\nA previous solver proposed "
+                f"`{incorrect_answer}`. Check that candidate and correct it "
+                "if needed."
+                + suffix
+            )
     if scenario == "accelerate":
         return mid_prefix + suffix
     if scenario == "repair_wrong_commitment":
@@ -160,7 +173,7 @@ def generated_metrics(
     backend,
     generated,
     expected_answer: str,
-    max_new_tokens: int,
+    generation_safety_ceiling: int,
 ) -> dict:
     answer, marker_index = extract_final_answer(generated.text)
     correct = final_answer_is_correct(generated.text, expected_answer)
@@ -177,12 +190,14 @@ def generated_metrics(
         "correct_final": int(correct),
         "answer_emitted": int(answer is not None),
         "tokens_to_correct_final": (
-            reasoning_tokens if correct else int(max_new_tokens) + 1
+            reasoning_tokens
+            if correct
+            else int(generation_safety_ceiling) + 1
         ),
         "reasoning_tokens_before_final": reasoning_tokens,
         "output_tokens": len(generated.token_ids),
-        "hit_token_cap": int(
-            len(generated.token_ids) >= int(max_new_tokens)
+        "hit_safety_ceiling": int(
+            len(generated.token_ids) >= int(generation_safety_ceiling)
             and answer is None
             and not generated.reached_eos
         ),
@@ -341,7 +356,9 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
         np.mean([row["answer_emitted"] for row in baseline_generations])
     )
     baseline_cap_rate = float(
-        np.mean([row["hit_token_cap"] for row in baseline_generations])
+        np.mean(
+            [row["hit_safety_ceiling"] for row in baseline_generations]
+        )
     )
     generation_assay_valid = bool(
         baseline_generations
@@ -355,7 +372,7 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
             "control": "baseline",
             "gate": "generation_assay_reaches_final_answer",
             "baseline_answer_emission_rate": baseline_completion_rate,
-            "baseline_token_cap_rate": baseline_cap_rate,
+            "baseline_safety_ceiling_rate": baseline_cap_rate,
             "status": (
                 "assay_valid"
                 if generation_assay_valid
@@ -375,6 +392,7 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
             "linear_plus_closed_k1_desired",
             "norm_matched_random",
         )
+        if ("accelerate", value) in summary_lookup
     ]
     acceleration_survives = bool(
         assay_valid
@@ -438,6 +456,7 @@ def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
             "linear_plus_closed_k1_desired",
             "norm_matched_random",
         )
+        if ("repair_wrong_commitment", value) in summary_lookup
     ]
     comparator_reasoning_tokens = float(
         np.mean(
@@ -549,6 +568,28 @@ def main() -> None:
     parser.add_argument("--layer", type=int, required=True)
     parser.add_argument("--problems-per-family", type=int, default=1)
     parser.add_argument(
+        "--benchmark",
+        choices=("math500", "controlled"),
+        default="math500",
+        help=(
+            "Behavioral task. math500 uses deterministic level 2-3 integer-"
+            "answer MATH-500 items; controlled retains the synthetic tasks."
+        ),
+    )
+    parser.add_argument(
+        "--math500-path",
+        default=None,
+        help=(
+            "Optional local MATH-500 test.jsonl. Otherwise it is downloaded "
+            "once from Hugging Face and cached under output.root."
+        ),
+    )
+    parser.add_argument(
+        "--math500-levels",
+        default="2,3",
+        help="Comma-separated MATH-500 difficulty levels.",
+    )
+    parser.add_argument(
         "--families",
         default="all",
         help=(
@@ -557,22 +598,49 @@ def main() -> None:
         ),
     )
     parser.add_argument("--rollouts", type=int, default=1)
-    parser.add_argument("--max-new-tokens", type=int, default=512)
+    parser.add_argument(
+        "--generation-safety-ceiling",
+        type=int,
+        default=8192,
+        help=(
+            "Emergency loop guard, not a reasoning budget. Generation stops "
+            "normally at a complete FINAL line or EOS."
+        ),
+    )
     parser.add_argument("--pulse-tokens", type=int, default=16)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument(
+        "--controls",
+        choices=("core", "full"),
+        default="core",
+        help=(
+            "core keeps baseline, generalized helix, linear, and closed k=1; "
+            "full also runs opposite and random controls."
+        ),
+    )
     args = parser.parse_args()
     if args.problems_per_family <= 0:
         raise ValueError("--problems-per-family must be positive")
     if args.rollouts <= 0:
         raise ValueError("--rollouts must be positive")
-    if args.max_new_tokens <= 0 or args.pulse_tokens <= 0:
-        raise ValueError("token budgets must be positive")
+    if args.generation_safety_ceiling <= 0 or args.pulse_tokens <= 0:
+        raise ValueError("token limits must be positive")
     if not 0.0 < args.top_p <= 1.0:
         raise ValueError("--top-p must be in (0, 1]")
     if args.top_k <= 0:
         raise ValueError("--top-k must be positive")
+    try:
+        math500_levels = {
+            int(value.strip())
+            for value in args.math500_levels.split(",")
+            if value.strip()
+        }
+    except ValueError as exc:
+        raise ValueError("--math500-levels must contain integers") from exc
+    if args.benchmark == "math500" and not math500_levels:
+        raise ValueError("--math500-levels cannot be empty")
 
     geometry_code = load_geometry_module()
     config = load_config(args.config)
@@ -619,7 +687,14 @@ def main() -> None:
     }
     available_families = {problem.family for problem in all_problems.values()}
     requested_families = None
-    if args.families != "all":
+    if args.benchmark == "math500":
+        if args.families not in ("all", "iterative_state_machine"):
+            raise ValueError(
+                "MATH-500 transfers the iterative-state geometry; omit "
+                "--families or set it to iterative_state_machine"
+            )
+        requested_families = {"iterative_state_machine"}
+    elif args.families != "all":
         requested_families = {
             value.strip()
             for value in args.families.split(",")
@@ -637,6 +712,21 @@ def main() -> None:
     )
     if not selected_problems:
         raise ValueError("no controlled problems were selected")
+    if args.benchmark == "math500":
+        math500_path = (
+            Path(args.math500_path)
+            if args.math500_path
+            else paths["root"] / "math500_test.jsonl"
+        )
+        evaluation_problems = load_math500_integer_problems(
+            len(selected_problems),
+            math500_levels,
+            int(config["study"]["seed"]) + 663,
+            math500_path,
+        )
+    else:
+        evaluation_problems = selected_problems
+    evaluation_pairs = list(zip(selected_problems, evaluation_problems))
     print("Loading model for behavioral interventions...", flush=True)
     backend = huggingface_collector_from_config(
         config["model"],
@@ -644,7 +734,7 @@ def main() -> None:
     )
     print(
         f"Loaded model; testing layer {layer} on "
-        f"{len(selected_problems)} problems",
+        f"{len(evaluation_pairs)} {args.benchmark} problems",
         flush=True,
     )
     indices = np.flatnonzero(activation_layers == layer)
@@ -713,18 +803,21 @@ def main() -> None:
         rows_by_problem[row["problem_id"]].append(row)
     baseline_pilots = {}
     pilot_rows = []
-    for problem_index, problem in enumerate(selected_problems):
+    for problem_index, (
+        geometry_problem,
+        problem,
+    ) in enumerate(evaluation_pairs):
         concise = sorted(
             [
                 row
-                for row in rows_by_problem[problem.problem_id]
+                for row in rows_by_problem[geometry_problem.problem_id]
                 if row["condition"] == "concise"
             ],
             key=lambda row: float(row["structural_progress"]),
         )
         if len(concise) < 3:
             raise ValueError(
-                f"{problem.problem_id} has too few concise states"
+                f"{geometry_problem.problem_id} has too few concise states"
             )
         target = min(
             concise[1:-1],
@@ -749,7 +842,7 @@ def main() -> None:
                 generated = backend.collect(
                     prompt,
                     [layer],
-                    args.max_new_tokens,
+                    args.generation_safety_ceiling,
                     seed,
                     temperature=args.temperature,
                     disable_eos=False,
@@ -759,12 +852,13 @@ def main() -> None:
                     stop_regex=FINAL_LINE_STOP_REGEX,
                     top_p=args.top_p,
                     top_k=args.top_k,
+                    stop_check_interval=8,
                 )
                 metrics = generated_metrics(
                     backend,
                     generated,
                     problem.answer,
-                    args.max_new_tokens,
+                    args.generation_safety_ceiling,
                 )
                 baseline_pilots[
                     (problem.problem_id, scenario, rollout)
@@ -776,7 +870,11 @@ def main() -> None:
                         "scenario": scenario,
                         "rollout": rollout,
                         "seed": seed,
-                        "max_new_tokens": args.max_new_tokens,
+                        "benchmark": args.benchmark,
+                        "benchmark_level": problem.metadata.get("level"),
+                        "generation_safety_ceiling": (
+                            args.generation_safety_ceiling
+                        ),
                         "temperature": args.temperature,
                         "top_p": args.top_p,
                         "top_k": args.top_k,
@@ -804,58 +902,76 @@ def main() -> None:
         )
         raise RuntimeError(
             "Behavioral assay aborted before interventions: the unmodified "
-            f"baseline did not emit FINAL within {args.max_new_tokens} tokens "
-            f"for {failed_labels}. Increase --max-new-tokens (try 1024). "
+            "baseline reached the emergency generation safety ceiling "
+            f"({args.generation_safety_ceiling} tokens) without FINAL for "
+            f"{failed_labels}. Treat this as a looping or prompt-calibration "
+            "failure rather than increasing the ceiling. "
             f"Diagnostics: {diagnostic_path}"
         )
     print(
         "Baseline viability passed for every prompt; starting causal assays.",
         flush=True,
     )
+    control_count = 4 if args.controls == "core" else 6
     total_generations = (
-        len(selected_problems) * 2 * args.rollouts * 6
+        len(evaluation_pairs) * 2 * args.rollouts * control_count
     )
     completed_generations = 0
 
-    for problem_index, problem in enumerate(selected_problems):
+    for problem_index, (
+        geometry_problem,
+        problem,
+    ) in enumerate(evaluation_pairs):
         concise = sorted(
             [
                 row
-                for row in rows_by_problem[problem.problem_id]
+                for row in rows_by_problem[geometry_problem.problem_id]
                 if row["condition"] == "concise"
             ],
             key=lambda row: float(row["structural_progress"]),
         )
         if len(concise) < 3:
             raise ValueError(
-                f"{problem.problem_id} has too few concise states"
+                f"{geometry_problem.problem_id} has too few concise states"
             )
         target = min(
             concise[1:-1],
             key=lambda row: abs(float(row["structural_progress"]) - 0.5),
         )
-        target_progress = float(target["structural_progress"])
-        geometry = geometry_by_problem[problem.problem_id]
+        mid_progress = float(target["structural_progress"])
+        geometry = geometry_by_problem[geometry_problem.problem_id]
         initial_progress = float(concise[0]["structural_progress"])
         final_progress = float(concise[-1]["structural_progress"])
 
-        def helix_delta(desired: float) -> np.ndarray:
+        def helix_delta(
+            desired: float,
+            source: float,
+        ) -> np.ndarray:
             return geometry.helix_value(
-                problem.family,
+                geometry_problem.family,
                 desired,
-            ) - geometry.helix_value(problem.family, target_progress)
+            ) - geometry.helix_value(geometry_problem.family, source)
 
-        def linear_delta(desired: float) -> np.ndarray:
+        def linear_delta(
+            desired: float,
+            source: float,
+        ) -> np.ndarray:
             return geometry.axial_value(desired) - geometry.axial_value(
-                target_progress
+                source
             )
 
-        def closed_delta(desired: float) -> np.ndarray:
-            return linear_delta(desired) + (
-                geometry.closed_after_axis_value(problem.family, desired)
+        def closed_delta(
+            desired: float,
+            source: float,
+        ) -> np.ndarray:
+            return linear_delta(desired, source) + (
+                geometry.closed_after_axis_value(
+                    geometry_problem.family,
+                    desired,
+                )
                 - geometry.closed_after_axis_value(
-                    problem.family,
-                    target_progress,
+                    geometry_problem.family,
+                    source,
                 )
             )
 
@@ -869,6 +985,15 @@ def main() -> None:
         ]
         incorrect = wrong_answer(problem)
         for scenario in ("accelerate", "repair_wrong_commitment"):
+            source_progress = (
+                mid_progress
+                if args.benchmark == "controlled"
+                else (
+                    initial_progress
+                    if scenario == "accelerate"
+                    else final_progress
+                )
+            )
             desired_progress = (
                 final_progress
                 if scenario == "accelerate"
@@ -879,22 +1004,26 @@ def main() -> None:
                 if scenario == "accelerate"
                 else final_progress
             )
-            desired = helix_delta(desired_progress)
+            desired = helix_delta(desired_progress, source_progress)
             desired_norm = float(np.linalg.norm(desired))
             if desired_norm <= EPS:
                 raise ValueError(
                     f"collapsed helix delta for {problem.problem_id}"
                 )
-            opposite = geometry_code.match_norm(
-                helix_delta(opposite_progress),
-                desired_norm,
-            )[0]
+            opposite = (
+                -desired
+                if args.benchmark == "math500"
+                else geometry_code.match_norm(
+                    helix_delta(opposite_progress, source_progress),
+                    desired_norm,
+                )[0]
+            )
             linear = geometry_code.match_norm(
-                linear_delta(desired_progress),
+                linear_delta(desired_progress, source_progress),
                 desired_norm,
             )[0]
             closed = geometry_code.match_norm(
-                closed_delta(desired_progress),
+                closed_delta(desired_progress, source_progress),
                 desired_norm,
             )[0]
             random_delta = geometry_code.random_orthogonal_delta(
@@ -911,6 +1040,16 @@ def main() -> None:
                 "linear_plus_closed_k1_desired": closed,
                 "norm_matched_random": random_delta,
             }
+            if args.controls == "core":
+                controls = {
+                    key: controls[key]
+                    for key in (
+                        "baseline",
+                        "helix_desired",
+                        "linear_desired",
+                        "linear_plus_closed_k1_desired",
+                    )
+                }
             prompt = evaluation_prompt(
                 problem,
                 prefixes[target["variant_id"]]["text"],
@@ -998,7 +1137,7 @@ def main() -> None:
                         generated = backend.collect(
                             prompt,
                             [layer],
-                            args.max_new_tokens,
+                            args.generation_safety_ceiling,
                             seed,
                             temperature=args.temperature,
                             disable_eos=False,
@@ -1008,6 +1147,7 @@ def main() -> None:
                             stop_regex=FINAL_LINE_STOP_REGEX,
                             top_p=args.top_p,
                             top_k=args.top_k,
+                            stop_check_interval=8,
                         )
                     completed_generations += 1
                     outcomes.append(
@@ -1019,10 +1159,17 @@ def main() -> None:
                             "rollout": rollout,
                             "seed": seed,
                             "control": control,
-                            "target_progress": target_progress,
+                            "benchmark": args.benchmark,
+                            "benchmark_level": problem.metadata.get("level"),
+                            "geometry_problem_id": (
+                                geometry_problem.problem_id
+                            ),
+                            "source_progress": source_progress,
                             "desired_progress": desired_progress,
                             "pulse_tokens": args.pulse_tokens,
-                            "max_new_tokens": args.max_new_tokens,
+                            "generation_safety_ceiling": (
+                                args.generation_safety_ceiling
+                            ),
                             "temperature": args.temperature,
                             "top_p": args.top_p,
                             "top_k": args.top_k,
@@ -1053,7 +1200,7 @@ def main() -> None:
                                 backend,
                                 generated,
                                 problem.answer,
-                                args.max_new_tokens,
+                                args.generation_safety_ceiling,
                             ),
                         }
                     )

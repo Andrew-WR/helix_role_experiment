@@ -169,7 +169,10 @@ python scripts/06c_behavioral_helix_interventions.py \
   --layer 63 \
   --problems-per-family 1 \
   --rollouts 1 \
-  --max-new-tokens 512 \
+  --benchmark math500 \
+  --math500-levels 2,3 \
+  --controls core \
+  --generation-safety-ceiling 8192 \
   --pulse-tokens 16 \
   --temperature 1.0 \
   --top-p 0.95 \
@@ -243,14 +246,15 @@ counterfactual-rollout principle from *Thought Anchors*: apply a brief
 activation pulse (16 tokens by default), remove it, and measure its downstream
 influence on the reasoning trace and final answer. It uses two contexts:
 
-- acceleration from a held-out mid-solution state, where the strongest result
-  is a correct `FINAL:` answer in fewer reasoning tokens; and
+- acceleration on a held-out MATH-500 problem from its initial state, where
+  the strongest result is a correct `FINAL:` answer in fewer reasoning
+  tokens; and
 - repair of a planted wrong commitment, where useful backward steering must
   induce planning, uncertainty management, checking, or repetition **and**
   improve final correctness. Slower or longer text alone does not pass.
 
-Only baseline, desired/opposite generalized-helix, linear,
-linear-plus-family-closed-`k=1`, and equal-norm random conditions are retained.
+The core comparison retains baseline, desired generalized-helix, linear, and
+linear-plus-family-closed-`k=1` conditions.
 Complete correct-versus-wrong continuation log odds replace the saturated
 first-token probability. A direct answer-logit direction is included only as a
 positive control: if it cannot move sequence log odds, all behavioral gates are
@@ -258,12 +262,22 @@ reported as assay-inconclusive rather than as evidence against the helix.
 
 Qwen thinking mode is enabled explicitly through its chat template. Generation
 defaults follow the model's recommended thinking-mode sampling settings
-(`temperature=1.0`, `top_p=0.95`, `top_k=20`) and allow 512 new tokens. Before
-scoring any intervention, the script runs every unmodified baseline prompt. If
-even one baseline rollout cannot emit a complete `FINAL:` answer within the
-budget, it writes `behavioral_helix_baseline_pilot.csv` and aborts; rerun with
-`--max-new-tokens 1024`. This prevents token-censored generations from being
-misreported as evidence for or against the helix.
+(`temperature=1.0`, `top_p=0.95`, `top_k=20`). The default behavioral task is a
+deterministically selected integer-answer MATH-500 problem at level 2 or 3.
+The iterative-state helix is fitted only on the existing controlled
+activations, so MATH-500 is a held-out cross-task transfer test rather than
+geometry training data. The old synthetic benchmark remains available with
+`--benchmark controlled`.
+
+There is no ordinary reasoning-token budget. Generation stops at a complete
+`FINAL:` line or EOS. `--generation-safety-ceiling 8192` is only an emergency
+loop guard; reaching it invalidates the prompt instead of being treated as a
+causal result. Before scoring any intervention, the script runs every
+unmodified baseline rollout. A failure writes
+`behavioral_helix_baseline_pilot.csv` and aborts. The default `--controls core`
+keeps only baseline, generalized helix, linear, and linear-plus-closed-`k=1`;
+use `--controls full` to add opposite and random controls. Core mode cuts the
+expensive generations from 12 to 8 per problem.
 
 The script writes only `behavioral_helix_outcomes.csv` for auditability and
 `behavioral_helix_key_results.csv` for interpretation. Output length is a weak
@@ -272,8 +286,9 @@ slow-reflection-assisted repair.
 
 Generated activations and per-token EOS logits are not copied back to CPU, and
 generation stops as soon as a nonempty `FINAL:` line appears. For the fastest
-plumbing check, add `--families iterative_state_machine --temperature 0`;
-then run all three families before interpreting an effect.
+plumbing check, keep one MATH-500 problem, one rollout, and core controls as in
+the command above. Increase problems and rollouts only after baseline
+completion and correctness are calibrated.
 
 The smoke and discovery configs use `adapter_neighborhood`: the adapted block
 plus two blocks on either side, together with five depth sentinels. This keeps

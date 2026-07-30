@@ -40,7 +40,7 @@ def final_answer_is_correct(text: str, expected: str) -> bool:
     target = normalize_answer(expected)
     if not observed or not target:
         return False
-    for prefix in ("the answer is ", "answer is "):
+    for prefix in ("the answer is ", "answer is ", "boxed "):
         if observed.startswith(prefix):
             observed = observed[len(prefix) :]
             break

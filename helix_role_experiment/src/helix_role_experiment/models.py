@@ -314,6 +314,7 @@ class HuggingFaceTraceCollector:
         stop_regex: str | None = None,
         top_p: float = 1.0,
         top_k: int | None = None,
+        stop_check_interval: int = 1,
     ) -> CollectedGeneration:
         torch = self.torch
         invalid = [index for index in layer_indices if index < 0 or index >= len(self.layers)]
@@ -323,6 +324,8 @@ class HuggingFaceTraceCollector:
             raise ValueError("top_p must be in (0, 1]")
         if top_k is not None and int(top_k) <= 0:
             raise ValueError("top_k must be positive")
+        if int(stop_check_interval) <= 0:
+            raise ValueError("stop_check_interval must be positive")
         text = self.format_prompt(prompt)
         inputs = self.tokenizer(text, return_tensors="pt")
         input_ids = inputs["input_ids"].to(self.input_device)
@@ -445,10 +448,17 @@ class HuggingFaceTraceCollector:
                 if not disable_eos and token in eos_set:
                     reached_eos = True
                     break
-                if stop_pattern is not None and stop_pattern.search(
-                    self.tokenizer.decode(
-                        generated,
-                        skip_special_tokens=False,
+                if (
+                    stop_pattern is not None
+                    and (
+                        (len(generated) % int(stop_check_interval) == 0)
+                        or len(generated) == max_new_tokens
+                    )
+                    and stop_pattern.search(
+                        self.tokenizer.decode(
+                            generated,
+                            skip_special_tokens=False,
+                        )
                     )
                 ):
                     break

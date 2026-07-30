@@ -17,6 +17,9 @@ class BehavioralTests(unittest.TestCase):
         self.assertFalse(final_answer_is_correct(text, "12"))
         self.assertFalse(final_answer_is_correct("FINAL: NOT DONE", "DONE"))
         self.assertFalse(final_answer_is_correct("The result might be 2.", "2"))
+        self.assertTrue(
+            final_answer_is_correct(r"FINAL: \boxed{42}", "42")
+        )
 
     def test_anchor_and_repetition_metrics(self):
         text = (
