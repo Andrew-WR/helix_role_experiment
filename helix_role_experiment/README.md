@@ -350,7 +350,7 @@ this two-problem run remains a pilot rather than a population claim.
 The script explicitly applies Qwen's chat template with `enable_thinking=true`.
 Thinking tags are expected and are recorded rather than treated as an invalid
 run. The prompt requires one mathematical operation per sentence and an exact
-final line of `FINAL: <answer>`. Generation ends at that line or EOS; 2048
+final line of `FINAL: <answer>`. Generation ends at that line or EOS; 8192
 tokens is only an emergency ceiling.
 Files 01 through 06c are not prerequisites. A run manifest prevents a changed
 design from overwriting results in the same output root.

@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--generation-safety-ceiling",
         type=int,
-        default=2048,
+        default=8192,
         help=(
             "Emergency ceiling only. Normal generation stops at FINAL or EOS; "
             "this is not the intended reasoning budget."
