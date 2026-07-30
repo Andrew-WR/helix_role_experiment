@@ -1,6 +1,6 @@
 {
   "study": {
-    "name": "qwen_9b_simple_multistep_thinking_pilot",
+    "name": "qwen_9b_simple_multistep_thinking_pilot_v2",
     "seed": 1729,
     "stage": 1
   },
@@ -36,6 +36,6 @@
     "activation_dtype": "float16"
   },
   "output": {
-    "root": "/kaggle/working/qwen9b_simple_multistep_thinking_pilot"
+    "root": "/kaggle/working/qwen9b_simple_multistep_thinking_pilot_v2"
   }
 }

@@ -220,6 +220,19 @@ class SubgoalProgressTests(unittest.TestCase):
         self.assertFalse(correct)
         self.assertEqual(method, "manual_review_required")
 
+    def test_answer_match_accepts_ordered_pair_for_xy_assignments(self):
+        correct, method, _ = answer_match(
+            "<think>Work.</think>\nFINAL: (3, 4)<|im_end|>",
+            "$x = 3, y = 4$",
+        )
+        swapped, _, _ = answer_match(
+            "<think>Work.</think>\nFINAL: (4, 3)<|im_end|>",
+            "$x = 3, y = 4$",
+        )
+        self.assertTrue(correct)
+        self.assertEqual(method, "ordered_pair_signature")
+        self.assertFalse(swapped)
+
     def test_answer_match_preserves_sign_and_fraction_order(self):
         equivalent, _, _ = answer_match(
             "Work.\nFINAL: $-1/6$",

@@ -24,6 +24,10 @@ ANSWER_NUMBER_PATTERN = re.compile(
 ASSIGNMENT_PATTERN = re.compile(
     r"\\?([A-Za-z]+)\s*=\s*([-+]?\d+(?:\.\d+)?)"
 )
+ORDERED_PAIR_PATTERN = re.compile(
+    r"\(\s*([-+]?\d+(?:\.\d+)?)\s*,\s*"
+    r"([-+]?\d+(?:\.\d+)?)\s*\)"
+)
 LATEX_COMMANDS = {
     "and",
     "at",
@@ -454,10 +458,11 @@ def answer_match(text: str, expected: str) -> tuple[bool, str, str | None]:
         and observed_numbers == expected_numbers
     ):
         return True, "normalized_exact", observed
-    expected_assignments = sorted(
+    expected_assignment_sequence = [
         (name.casefold(), value)
         for name, value in ASSIGNMENT_PATTERN.findall(expected)
-    )
+    ]
+    expected_assignments = sorted(expected_assignment_sequence)
     if expected_assignments:
         observed_assignments = sorted(
             (name.casefold(), value)
@@ -465,6 +470,14 @@ def answer_match(text: str, expected: str) -> tuple[bool, str, str | None]:
         )
         if observed_assignments == expected_assignments:
             return True, "variable_assignment_signature", observed
+        ordered_pairs = ORDERED_PAIR_PATTERN.findall(observed)
+        if (
+            [name for name, _ in expected_assignment_sequence] == ["x", "y"]
+            and ordered_pairs
+            and list(ordered_pairs[-1])
+            == [value for _, value in expected_assignment_sequence]
+        ):
+            return True, "ordered_pair_signature", observed
         return False, "manual_review_required", observed
     observed_words = set(re.findall(r"[A-Za-z]+", observed.casefold()))
     expected_words = {
