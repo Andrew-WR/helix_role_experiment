@@ -134,6 +134,26 @@ class SubgoalProgressTests(unittest.TestCase):
         self.assertEqual(summary["ordered_subgoals_completed"], 0)
         self.assertAlmostEqual(progress[-1], 0.0)
 
+    def test_post_thinking_boxed_answer_cannot_advance_progress(self):
+        text = (
+            r"<think>First calculation.</think>"
+            "\n"
+            r"Therefore, \boxed{1}."
+        )
+        rows, _, summary = align_sentences_to_ordered_subgoals(
+            OffsetTokenizer(),
+            text,
+            len(re.findall(r"\S+", text)),
+            np.asarray([[1.0, 0.0], [0.0, 1.0]]),
+            np.asarray([[1.0, 0.0], [0.0, 1.0]]),
+            0.5,
+        )
+        self.assertEqual(rows[0]["advanced_step_count"], 1)
+        self.assertEqual(rows[-1]["is_post_thinking_sentence"], 1)
+        self.assertEqual(rows[-1]["is_final_answer_sentence"], 1)
+        self.assertEqual(rows[-1]["advanced_step_count"], 0)
+        self.assertEqual(summary["ordered_subgoals_completed"], 1)
+
     def test_progress_changes_only_after_sentence_boundary(self):
         text = "First calculation. FINAL: 1"
         sentence_embeddings = np.asarray([[1.0, 0.0], [1.0, 0.0]])

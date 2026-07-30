@@ -1,0 +1,125 @@
+{
+  "dataset_info": {
+    "level": "foundational",
+    "num_problems": 10,
+    "description": "Easy, multi-step mathematics problems with prescribed solution paths and minimal LaTeX-formatted subgoals."
+  },
+  "problems": [
+    {
+      "id": 1,
+      "topic": "Algebra - System by Substitution",
+      "question": "Solve the system $x + y = 7$ and $2x - y = 2$ by substitution. Isolate $x$ from the first equation, substitute into the second equation, solve for $y$, and then back-substitute for $x$.",
+      "steps": {
+        "step_1": "Isolate $x$ from the first equation: $x = 7 - y$.",
+        "step_2": "Substitute into the second equation: $2(7-y) - y = 2 \\Rightarrow 14 - 3y = 2$.",
+        "step_3": "Solve for $y$: $-3y = -12 \\Rightarrow y = 4$.",
+        "step_4": "Back-substitute: $x = 7 - 4 = 3$."
+      },
+      "answer": "$x = 3, y = 4$"
+    },
+    {
+      "id": 2,
+      "topic": "Algebra - System by Substitution",
+      "question": "Solve the system $x + y = 9$ and $3x - y = 7$ by substitution. Isolate $x$ from the first equation, substitute into the second equation, solve for $y$, and then back-substitute for $x$.",
+      "steps": {
+        "step_1": "Isolate $x$ from the first equation: $x = 9 - y$.",
+        "step_2": "Substitute into the second equation: $3(9-y) - y = 7 \\Rightarrow 27 - 4y = 7$.",
+        "step_3": "Solve for $y$: $-4y = -20 \\Rightarrow y = 5$.",
+        "step_4": "Back-substitute: $x = 9 - 5 = 4$."
+      },
+      "answer": "$x = 4, y = 5$"
+    },
+    {
+      "id": 3,
+      "topic": "Arithmetic - Order of Operations",
+      "question": "Evaluate $2(3^2 - 4) + \\dfrac{6}{3}$ using the standard order of operations, showing each stage.",
+      "steps": {
+        "step_1": "Evaluate the exponent: $3^2 = 9$.",
+        "step_2": "Evaluate the parentheses: $9 - 4 = 5$.",
+        "step_3": "Multiply and divide: $2(5) = 10$ and $\\dfrac{6}{3} = 2$.",
+        "step_4": "Add the remaining terms: $10 + 2 = 12$."
+      },
+      "answer": "$12$"
+    },
+    {
+      "id": 4,
+      "topic": "Sequences - Arithmetic Sequence",
+      "question": "An arithmetic sequence has first term $a_1 = 5$ and common difference $d = 3$. Find $a_6$ using $a_n = a_1 + (n-1)d$.",
+      "steps": {
+        "step_1": "Start with the arithmetic-sequence formula: $a_n = a_1 + (n-1)d$.",
+        "step_2": "Substitute $n = 6$, $a_1 = 5$, and $d = 3$: $a_6 = 5 + (6-1)3$.",
+        "step_3": "Evaluate: $a_6 = 5 + 15 = 20$."
+      },
+      "answer": "$a_6 = 20$"
+    },
+    {
+      "id": 5,
+      "topic": "Algebra - Fractional Linear Equation",
+      "question": "Solve $\\dfrac{x}{3} + 2 = 6$. Isolate $x$ one operation at a time, then verify by substitution.",
+      "steps": {
+        "step_1": "Subtract $2$ from both sides: $\\dfrac{x}{3} = 4$.",
+        "step_2": "Multiply both sides by $3$: $x = 12$.",
+        "step_3": "Verify: $\\dfrac{12}{3} + 2 = 4 + 2 = 6$."
+      },
+      "answer": "$x = 12$"
+    },
+    {
+      "id": 6,
+      "topic": "Geometry - Rectangle",
+      "question": "A rectangle has perimeter $26$ and length $8$. Find its width $w$, then find its area.",
+      "steps": {
+        "step_1": "Use the perimeter formula: $2(8 + w) = 26$.",
+        "step_2": "Solve for the width: $8 + w = 13 \\Rightarrow w = 5$.",
+        "step_3": "Compute the area: $A = 8 \\cdot 5 = 40$."
+      },
+      "answer": "$w = 5, A = 40$"
+    },
+    {
+      "id": 7,
+      "topic": "Percentages - Discount and Tax",
+      "question": "An item costs $80$ dollars. It is discounted by $25\\%$, and then $10\\%$ sales tax is applied to the discounted price. Find the final price in dollars.",
+      "steps": {
+        "step_1": "Compute the discount: $0.25 \\cdot 80 = 20$.",
+        "step_2": "Subtract the discount: $80 - 20 = 60$.",
+        "step_3": "Compute tax on the discounted price: $0.10 \\cdot 60 = 6$.",
+        "step_4": "Add the tax: $60 + 6 = 66$."
+      },
+      "answer": "$66$ dollars"
+    },
+    {
+      "id": 8,
+      "topic": "Probability - Two Coins",
+      "question": "Two fair coins are tossed. Find the probability of getting exactly one head by listing the sample space and favorable outcomes.",
+      "steps": {
+        "step_1": "List the equally likely sample space: $\\{HH, HT, TH, TT\\}$, which has $4$ outcomes.",
+        "step_2": "Identify the favorable outcomes with exactly one head: $HT$ and $TH$, so there are $2$.",
+        "step_3": "Compute the probability: $\\dfrac{2}{4} = \\dfrac{1}{2}$."
+      },
+      "answer": "$\\dfrac{1}{2}$"
+    },
+    {
+      "id": 9,
+      "topic": "Calculus - Tangent Line",
+      "question": "For $f(x) = x^2 + 1$, find the tangent line at $x = 2$. Compute the derivative, the slope and point, then the line equation.",
+      "steps": {
+        "step_1": "Differentiate: $f'(x) = 2x$.",
+        "step_2": "Evaluate the slope and point: $f'(2) = 4$ and $f(2) = 5$, giving $(2,5)$.",
+        "step_3": "Use point-slope form: $y - 5 = 4(x - 2)$.",
+        "step_4": "Simplify the line equation: $y = 4x - 3$."
+      },
+      "answer": "$y = 4x - 3$"
+    },
+    {
+      "id": 10,
+      "topic": "Algebra - Quadratic Factoring",
+      "question": "Solve $x^2 - 5x + 6 = 0$ by factoring, then verify both roots.",
+      "steps": {
+        "step_1": "Factor the quadratic: $x^2 - 5x + 6 = (x-2)(x-3)$.",
+        "step_2": "Apply the zero-product property: $x - 2 = 0$ or $x - 3 = 0$.",
+        "step_3": "Solve the two equations: $x = 2$ or $x = 3$.",
+        "step_4": "Verify: $2^2 - 5(2) + 6 = 0$ and $3^2 - 5(3) + 6 = 0$."
+      },
+      "answer": "$\\{2, 3\\}$"
+    }
+  ]
+}

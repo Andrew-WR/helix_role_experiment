@@ -25,6 +25,30 @@ class BehavioralTests(unittest.TestCase):
             final_answer_is_correct("FINAL: 2<|im_end|>", "2")
         )
 
+    def test_terminal_box_after_thinking_is_a_safe_fallback(self):
+        text = (
+            r"<think>Try \boxed{3}; revise to 4.</think>"
+            "\n"
+            r"\boxed{-\dfrac{1}{6}}<|im_end|>"
+        )
+        answer, start = extract_final_answer(text)
+        self.assertEqual(answer, r"-\dfrac{1}{6}")
+        self.assertEqual(start, text.rfind("\n") + 1)
+        self.assertEqual(
+            extract_final_answer(r"<think>unfinished \boxed{4}"),
+            (None, None),
+        )
+        self.assertEqual(
+            extract_final_answer(r"\boxed{4} but reconsidering"),
+            (None, None),
+        )
+        self.assertEqual(
+            extract_final_answer(
+                "<think>FINAL: 3</think>\nFINAL: 4<|im_end|>"
+            )[0],
+            "4<|im_end|>",
+        )
+
     def test_anchor_and_repetition_metrics(self):
         text = (
             "First, I will make a plan. Wait, that was a mistake. "

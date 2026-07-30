@@ -35,8 +35,8 @@ from helix_role_experiment.subgoal_progress import (
 
 
 FINAL_LINE_STOP_REGEX = (
-    r"(?im)^\s*\**final(?:\s+answer)?\**\s*:\**\s*\S[^\n]*"
-    r"(?:\n|<\|im_end\|>)"
+    r"(?is)</think>[ \t]*(?:\r?\n[ \t]*)+"
+    r"FINAL:[ \t]*\S[^\r\n]*(?:\r?\n|<\|im_end\|>)"
 )
 CONTROLS = (
     "semantic_forward",
@@ -57,10 +57,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True)
     parser.add_argument(
         "--dataset",
-        default="data/undergrad_math_dataset_latex.json",
+        default="data/simple_multistep_math_dataset_latex.json",
     )
-    parser.add_argument("--calibration-id", type=int, default=9)
-    parser.add_argument("--test-id", type=int, default=10)
+    parser.add_argument("--calibration-id", type=int, default=1)
+    parser.add_argument("--test-id", type=int, default=2)
     parser.add_argument(
         "--layers",
         default="16,20,24,28,31",
@@ -147,11 +147,17 @@ def load_problems(path: Path) -> dict[int, dict[str, Any]]:
 
 def evaluation_prompt(problem: dict[str, Any]) -> str:
     return (
-        f"{problem['question']}\n\n"
-        "Give a concise solution containing only the necessary mathematical "
-        "steps. Put each distinct step in its own sentence; do not repeat, "
-        "re-plan, or re-check completed work. End with a separate line beginning "
-        "`FINAL:` followed only by the answer."
+        "Response contract (follow exactly): Use the model-provided thinking "
+        "section for the entire derivation. Inside that section, give the "
+        "complete solution as concise, nonredundant mathematical sentences, "
+        "with one operation or inference per sentence. Do not write `FINAL:` "
+        "inside the thinking section. After closing the thinking section, "
+        "output exactly one nonempty line and nothing else:\n"
+        "FINAL: <answer>\n"
+        "Do not repeat, summarize, justify, or restate the derivation after "
+        "the thinking section. Do not replace the required `FINAL:` line with "
+        "`\\boxed{...}`.\n\n"
+        f"Question: {problem['question']}"
     )
 
 

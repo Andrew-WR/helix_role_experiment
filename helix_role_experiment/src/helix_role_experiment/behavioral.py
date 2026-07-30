@@ -19,6 +19,7 @@ ANCHOR_PATTERNS = tuple(
 )
 WORD_PATTERN = re.compile(r"[a-z0-9]+")
 SPECIAL_TOKEN_PATTERN = re.compile(r"<\|[^|<>]+\|>")
+BOX_START_PATTERN = re.compile(r"\\(?:boxed|fbox)\{")
 ABBREVIATIONS = {
     "e.g.",
     "i.e.",
@@ -47,12 +48,53 @@ def normalize_answer(value: str) -> str:
     return " ".join(WORD_PATTERN.findall(value.casefold()))
 
 
+def _terminal_boxed_answer(text: str) -> tuple[str | None, int | None]:
+    lowered = text.casefold()
+    thinking_open = lowered.rfind("<think>")
+    thinking_close = lowered.rfind("</think>")
+    if thinking_open >= 0 and thinking_close < thinking_open:
+        return None, None
+    answer_region_start = (
+        thinking_close + len("</think>") if thinking_close >= 0 else 0
+    )
+    candidates: list[tuple[str, int]] = []
+    for match in BOX_START_PATTERN.finditer(text, answer_region_start):
+        depth = 1
+        index = match.end()
+        while index < len(text) and depth:
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+            index += 1
+        if depth:
+            continue
+        suffix = SPECIAL_TOKEN_PATTERN.sub("", text[index:])
+        suffix = re.sub(r"</?s>", "", suffix, flags=re.IGNORECASE)
+        suffix = suffix.replace(r"\)", "").replace(r"\]", "")
+        if suffix.strip(" \t\r\n$.,;:!?*_`"):
+            continue
+        line_start = text.rfind("\n", answer_region_start, match.start()) + 1
+        candidates.append((text[match.end() : index - 1].strip(), line_start))
+    return candidates[-1] if candidates else (None, None)
+
+
 def extract_final_answer(text: str) -> tuple[str | None, int | None]:
     matches = list(FINAL_PATTERN.finditer(text))
-    if not matches:
-        return None, None
-    match = matches[-1]
-    return match.group(1).strip(), match.start()
+    lowered = text.casefold()
+    thinking_open = lowered.rfind("<think>")
+    thinking_close = lowered.rfind("</think>")
+    if thinking_open >= 0:
+        if thinking_close < thinking_open:
+            matches = []
+        else:
+            matches = [
+                match for match in matches if match.start() >= thinking_close
+            ]
+    if matches:
+        match = matches[-1]
+        return match.group(1).strip(), match.start()
+    return _terminal_boxed_answer(text)
 
 
 def final_answer_is_correct(text: str, expected: str) -> bool:

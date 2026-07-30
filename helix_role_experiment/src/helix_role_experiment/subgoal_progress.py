@@ -159,6 +159,7 @@ def align_sentences_to_ordered_subgoals(
     recomputed_subgoal_count = 0
     pairwise_recurrence_count = 0
     _, final_answer_start = extract_final_answer(text)
+    thinking_close_start = text.casefold().rfind("</think>")
     rows: list[dict[str, Any]] = []
     for sentence_index, span in enumerate(spans):
         token_start, token_end = token_span_for_char_span(offsets, span)
@@ -176,10 +177,14 @@ def align_sentences_to_ordered_subgoals(
         prior_frontier = frontier
         advanced_steps: list[int] = []
         is_final_answer_sentence = bool(
-            final_answer_start is not None and span.start >= final_answer_start
+            final_answer_start is not None and span.end > final_answer_start
+        )
+        is_post_thinking_sentence = bool(
+            thinking_close_start >= 0 and span.start >= thinking_close_start
         )
         if (
             not is_final_answer_sentence
+            and not is_post_thinking_sentence
             and frontier < len(step_values)
             and float(similarities[sentence_index, frontier])
             >= float(threshold)
@@ -200,6 +205,7 @@ def align_sentences_to_ordered_subgoals(
         )
         pairwise_recurrence = bool(
             not is_final_answer_sentence
+            and not is_post_thinking_sentence
             and sentence_index
             and prior_sentence_similarity >= float(threshold)
         )
@@ -215,6 +221,7 @@ def align_sentences_to_ordered_subgoals(
         )
         recomputed_subgoal = bool(
             not is_final_answer_sentence
+            and not is_post_thinking_sentence
             and
             not advances
             and prior_frontier
@@ -228,6 +235,7 @@ def align_sentences_to_ordered_subgoals(
             "sentence_index": sentence_index,
             "sentence": span.text,
             "is_final_answer_sentence": int(is_final_answer_sentence),
+            "is_post_thinking_sentence": int(is_post_thinking_sentence),
             "token_start": token_start,
             "token_end": token_end,
             "next_required_step": (

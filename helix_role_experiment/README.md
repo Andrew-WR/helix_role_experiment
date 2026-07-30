@@ -303,12 +303,18 @@ Outputs include:
 
 `06d_semantic_progress_interventions.py` is the replacement, falsification-first
 semantic experiment. It is also self-contained and uses
-`data/undergrad_math_dataset_latex.json`. By default, authored problem 9 is the
-only calibration trace and problem 10 is the held-out causal test; both have
-four authored subgoals. The other eight problems remain untouched for a later
+`data/simple_multistep_math_dataset_latex.json`. These are deliberately easy,
+LaTeX-formatted problems with prescribed three- or four-step paths and
+conservative automatic grading. By default, problem 1 is the calibration trace
+and problem 2 is the held-out causal test. The other eight problems remain untouched for a later
 frozen replication. All candidate layers are captured in the same two baseline
 generations, so testing five late
 layers does not require five rollouts.
+
+The first pair uses the same prescribed substitution template with different
+coefficients. It tests within-template transfer under tightly matched
+difficulty; it does not establish cross-method semantic generalization. Problems
+3 through 10 provide the later cross-method test after the pilot is frozen.
 
 The semantic threshold is not fixed at 0.65. Qwen3-Embedding-0.6B embeds the
 minimal authored steps and each problem's threshold is its own mean distinct
@@ -343,7 +349,9 @@ this two-problem run remains a pilot rather than a population claim.
 
 The script explicitly applies Qwen's chat template with `enable_thinking=true`.
 Thinking tags are expected and are recorded rather than treated as an invalid
-run. Generation ends at `FINAL:` or EOS; 2048 tokens is only an emergency ceiling.
+run. The prompt requires one mathematical operation per sentence and an exact
+final line of `FINAL: <answer>`. Generation ends at that line or EOS; 2048
+tokens is only an emergency ceiling.
 Files 01 through 06c are not prerequisites. A run manifest prevents a changed
 design from overwriting results in the same output root.
 
