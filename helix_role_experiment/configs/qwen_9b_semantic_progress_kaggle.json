@@ -1,6 +1,6 @@
 {
   "study": {
-    "name": "qwen_9b_semantic_progress_pilot",
+    "name": "qwen_9b_semantic_progress_thinking_pilot",
     "seed": 1729,
     "stage": 1
   },
@@ -16,7 +16,7 @@
     "adapter_fallback_paths": [],
     "adapter_enabled": false,
     "chat_template_kwargs": {
-      "enable_thinking": false
+      "enable_thinking": true
     },
     "low_cpu_mem_usage": true,
     "attn_implementation": "sdpa",
@@ -36,6 +36,6 @@
     "activation_dtype": "float16"
   },
   "output": {
-    "root": "/kaggle/working/qwen9b_semantic_progress_pilot"
+    "root": "/kaggle/working/qwen9b_semantic_progress_thinking_pilot"
   }
 }

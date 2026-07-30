@@ -266,9 +266,8 @@ the local closed-`k=1` displacement is nonzero and therefore remains a real
 rotational comparator. All three interventions reuse the baseline sampling
 seed.
 
-The dedicated semantic-progress config disables Qwen thinking mode for the
-short authored-subgoal experiment below. The older 9B behavioral smoke config
-retains thinking mode so its earlier result remains reproducible.
+The dedicated semantic-progress config enables Qwen thinking mode. The
+authored-subgoal labels are applied to the resulting reasoning trace.
 
 There is no ordinary reasoning-token budget. Generation stops at a complete
 `FINAL:` line or EOS. `--generation-safety-ceiling 8192` is only an emergency
@@ -342,8 +341,9 @@ ordered-subgoal coverage are hard gates before shorter output or earlier
 progress AUC can count as success. Seven explicit falsification gates are written;
 this two-problem run remains a pilot rather than a population claim.
 
-The script explicitly applies Qwen's chat template with `enable_thinking=false`.
-Generation ends at `FINAL:` or EOS; 2048 tokens is only an emergency ceiling.
+The script explicitly applies Qwen's chat template with `enable_thinking=true`.
+Thinking tags are expected and are recorded rather than treated as an invalid
+run. Generation ends at `FINAL:` or EOS; 2048 tokens is only an emergency ceiling.
 Files 01 through 06c are not prerequisites. A run manifest prevents a changed
 design from overwriting results in the same output root.
 

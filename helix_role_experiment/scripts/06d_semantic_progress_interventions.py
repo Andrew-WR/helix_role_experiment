@@ -537,7 +537,6 @@ def falsification_gates(
     baseline_valid = bool(
         baseline["correct_final"]
         and baseline["ordered_subgoals_completed"] >= MIN_BASELINE_SUBGOALS
-        and not baseline["thinking_tag_detected"]
     )
     return [
         gate(
@@ -634,7 +633,7 @@ def main() -> None:
     config = load_config(args.config)
     config["model"].setdefault("chat_template_kwargs", {})[
         "enable_thinking"
-    ] = False
+    ] = True
     paths = ensure_output_dirs(config)
     seed = int(config["study"]["seed"]) + 664
     seed_everything(seed)
@@ -683,7 +682,7 @@ def main() -> None:
             "per-problem mean cosine over distinct pairs of gold-step embeddings"
         ),
         "threshold_frozen_across_conditions": True,
-        "reasoning_mode_requested": False,
+        "reasoning_mode_requested": True,
         "arguments": vars(args),
         "dataset_path": str(dataset_path.resolve()),
         "dataset_sha256": dataset_sha256,
@@ -728,7 +727,7 @@ def main() -> None:
         ],
     )
     print(
-        "Loading Qwen3.5-9B with the chat template enabled and thinking disabled; "
+        "Loading Qwen3.5-9B with the chat template and thinking mode enabled; "
         f"calibration={args.calibration_id}, heldout={args.test_id}",
         flush=True,
     )
@@ -738,8 +737,8 @@ def main() -> None:
     )
     if not getattr(backend.tokenizer, "chat_template", None):
         raise RuntimeError(
-            "Qwen chat template is unavailable; the no-thinking prompt contract "
-            "cannot be verified"
+            "Qwen chat template is unavailable; thinking mode cannot be "
+            "requested reliably"
         )
     candidate_layers = parse_layer_spec(
         args.layers,
@@ -843,11 +842,6 @@ def main() -> None:
         not calibration_correct
         or calibration_summary["ordered_subgoals_completed"]
         < MIN_BASELINE_SUBGOALS
-        or re.search(
-            r"</?think>",
-            calibration_generation.text,
-            flags=re.IGNORECASE,
-        )
         or len(calibration_generation.token_ids)
         >= args.generation_safety_ceiling
     ):
@@ -879,7 +873,7 @@ def main() -> None:
         )
         raise RuntimeError(
             "Pilot is INVALID: the fixed calibration baseline was incorrect, "
-            "hit the emergency ceiling, emitted thinking tags, or completed "
+            "hit the emergency ceiling, or completed "
             f"fewer than {MIN_BASELINE_SUBGOALS} authored subgoals. Inspect "
             "semantic_baseline_diagnostic.csv; do not silently replace the prompt."
         )
@@ -969,11 +963,6 @@ def main() -> None:
     if (
         not test_correct
         or test_summary["ordered_subgoals_completed"] < MIN_BASELINE_SUBGOALS
-        or re.search(
-            r"</?think>",
-            test_generation.text,
-            flags=re.IGNORECASE,
-        )
         or len(test_generation.token_ids) >= args.generation_safety_ceiling
     ):
         diagnostic = {
@@ -1004,8 +993,7 @@ def main() -> None:
         )
         raise RuntimeError(
             "Pilot is INVALID: the fixed held-out baseline was incorrect, hit "
-            "the emergency ceiling, or had no measurable gold-subgoal progress. "
-            "It may also have emitted thinking tags or completed fewer than "
+            "the emergency ceiling, or completed fewer than "
             f"{MIN_BASELINE_SUBGOALS} authored subgoals. Inspect "
             "semantic_baseline_diagnostic.csv; do not reinterpret this as "
             "evidence against the activation signal."
@@ -1155,7 +1143,7 @@ def main() -> None:
         thinking_tag_detected = bool(
             re.search(r"</?think>", generated.text, flags=re.IGNORECASE)
         )
-        if len(applied_steps) != args.pulse_tokens or thinking_tag_detected:
+        if len(applied_steps) != args.pulse_tokens:
             write_csv(
                 paths["tables"] / "semantic_control_diagnostic.csv",
                 [
@@ -1171,7 +1159,7 @@ def main() -> None:
             )
             raise RuntimeError(
                 f"Pilot is INVALID: {control} did not receive the complete "
-                "pulse or emitted thinking tags. Inspect "
+                "pulse. Inspect "
                 "semantic_control_diagnostic.csv."
             )
         rows, progress, summary = semantic_alignment(
@@ -1229,7 +1217,7 @@ def main() -> None:
                 "chat_template_used": int(
                     bool(getattr(backend.tokenizer, "chat_template", None))
                 ),
-                "thinking_mode_requested": False,
+                "thinking_mode_requested": True,
                 "progress_timebase": "t/T_heldout_baseline",
                 "pulse_after_subgoal": args.pulse_after_subgoal,
                 "pulse_start_token": pulse_start,
