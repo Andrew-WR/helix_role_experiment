@@ -78,6 +78,8 @@ def _period_is_terminal(text: str, index: int, start: int) -> bool:
     if text[index : index + 3] == "..." or text[max(0, index - 2) : index + 1] == "...":
         return False
     prefix = text[start : index + 1].rstrip().casefold()
+    if re.fullmatch(r"\s*(?:\d+|[a-z])\.", prefix):
+        return False
     last = prefix.split()[-1] if prefix.split() else ""
     if last in ABBREVIATIONS:
         return False

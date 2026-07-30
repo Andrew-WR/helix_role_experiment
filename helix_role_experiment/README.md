@@ -266,10 +266,9 @@ the local closed-`k=1` displacement is nonzero and therefore remains a real
 rotational comparator. All three interventions reuse the baseline sampling
 seed.
 
-Qwen thinking mode is enabled explicitly through its chat template. Generation
-defaults follow the model's recommended thinking-mode sampling settings
-(`temperature=1.0`, `top_p=0.95`, `top_k=20`). The default behavioral task is a
-deterministically selected integer-answer MATH-500 problem at level 1.
+The dedicated semantic-progress config disables Qwen thinking mode for the
+short authored-subgoal experiment below. The older 9B behavioral smoke config
+retains thinking mode so its earlier result remains reproducible.
 
 There is no ordinary reasoning-token budget. Generation stops at a complete
 `FINAL:` line or EOS. `--generation-safety-ceiling 8192` is only an emergency
@@ -302,6 +301,72 @@ Outputs include:
 - `behavioral_helix_key_results.csv`
 - `behavioral_helix_sentence_audit.csv`
 - `behavioral_helix_semantic_summary.csv`
+
+`06d_semantic_progress_interventions.py` is the replacement, falsification-first
+semantic experiment. It is also self-contained and uses
+`data/undergrad_math_dataset_latex.json`. By default, authored problem 9 is the
+only calibration trace and problem 10 is the held-out causal test; both have
+four authored subgoals. The other eight problems remain untouched for a later
+frozen replication. All candidate layers are captured in the same two baseline
+generations, so testing five late
+layers does not require five rollouts.
+
+The semantic threshold is not fixed at 0.65. Qwen3-Embedding-0.6B embeds the
+minimal authored steps and each problem's threshold is its own mean distinct
+pairwise cosine similarity, frozen across that problem's conditions before any
+outcome comparison. A generated sentence advances progress
+only if it matches the next ordered authored subgoal above that frozen
+threshold, with at most one subgoal credited per sentence. All `FINAL:` spans
+are excluded from progress and recurrence labels. Progress is a staircase that
+changes after sentence completion; it is not retrospectively ramped across the
+sentence. Activation row `t` is the predictive state for output token `t`, so
+its label is the number of subgoals completed by the preceding output prefix.
+Recomputation means re-hitting an already completed subgoal without
+advancing the ordered frontier. The full sentence-by-step similarity matrix is
+exported for audit.
+
+At each candidate layer, the script fits activation variation attributable to
+authored subgoal progress after controlling for normalized output position and
+closed `k=1` sine/cosine terms. It keeps this conditional coefficient rather
+than post-hoc orthogonalizing it. Layer selection uses contiguous blocked-CV
+incremental R2 on the calibration trace. The frozen direction must show both
+partial-correlation and event-locked movement at held-out subgoal boundaries
+before its causal result is taken seriously.
+
+The causal edit is a four-token pulse immediately after held-out baseline
+subgoal 1, not persistent steering throughout generation. Semantic-forward,
+semantic-reverse, linear, and closed-`k=1` pulses are norm matched to half the
+calibration layer's median native token-to-token activation displacement. Every
+condition uses the held-out baseline clock `t/T_baseline`. Correctness and
+ordered-subgoal coverage are hard gates before shorter output or earlier
+progress AUC can count as success. Seven explicit falsification gates are written;
+this two-problem run remains a pilot rather than a population claim.
+
+The script explicitly applies Qwen's chat template with `enable_thinking=false`.
+Generation ends at `FINAL:` or EOS; 2048 tokens is only an emergency ceiling.
+Files 01 through 06c are not prerequisites. A run manifest prevents a changed
+design from overwriting results in the same output root.
+
+Run:
+
+```bash
+python scripts/06d_semantic_progress_interventions.py \
+  --config configs/qwen_9b_semantic_progress_kaggle.json
+```
+
+The concise files to inspect first are:
+
+- `semantic_key_results.csv`
+- `semantic_falsification_gates.csv`
+- `semantic_intervention_outcomes.csv`
+
+For auditing the labels and signal fit, inspect:
+
+- `semantic_subgoal_threshold.csv`
+- `semantic_subgoal_alignment.csv`
+- `semantic_signal_layer_selection.csv`
+- `semantic_event_locked_summary.csv`
+- `semantic_run_manifest.json`
 
 The smoke and discovery configs use `adapter_neighborhood`: the adapted block
 plus two blocks on either side, together with five depth sentinels. This keeps

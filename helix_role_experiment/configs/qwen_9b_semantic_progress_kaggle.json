@@ -1,0 +1,41 @@
+{
+  "study": {
+    "name": "qwen_9b_semantic_progress_pilot",
+    "seed": 1729,
+    "stage": 1
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "Qwen/Qwen3.5-9B",
+    "revision": null,
+    "tokenizer_revision": null,
+    "device": "auto",
+    "dtype": "float16",
+    "trust_remote_code": false,
+    "adapter_path": null,
+    "adapter_fallback_paths": [],
+    "adapter_enabled": false,
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    },
+    "low_cpu_mem_usage": true,
+    "attn_implementation": "sdpa",
+    "max_memory": {
+      "0": "15GiB",
+      "1": "15GiB",
+      "cpu": "16GiB"
+    },
+    "quantization": {
+      "load_in_4bit": true,
+      "bnb_4bit_quant_type": "nf4",
+      "bnb_4bit_use_double_quant": true,
+      "bnb_4bit_compute_dtype": "float16"
+    }
+  },
+  "collection": {
+    "activation_dtype": "float16"
+  },
+  "output": {
+    "root": "/kaggle/working/qwen9b_semantic_progress_pilot"
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "dataset_info": {
+    "level": "undergraduate",
+    "num_problems": 10,
+    "description": "Minimal, non-redundant step-by-step solutions for undergraduate math problems, formatted with LaTeX math notation."
+  },
+  "problems": [
+    {
+      "id": 1,
+      "topic": "Calculus - Optimization",
+      "question": "Find the local extrema of $f(x) = x^3 - 3x^2 - 9x + 5$.",
+      "steps": {
+        "step_1": "Differentiate: $f'(x) = 3x^2 - 6x - 9$.",
+        "step_2": "Set $f'(x) = 0$: $3x^2 - 6x - 9 = 0 \\Rightarrow x^2 - 2x - 3 = 0 \\Rightarrow (x-3)(x+1) = 0 \\Rightarrow x = -1, 3$.",
+        "step_3": "Classify using $f''(x) = 6x - 6$: $f''(-1) = -12 < 0$ (local max), $f''(3) = 12 > 0$ (local min).",
+        "step_4": "Evaluate $f$ at critical points: $f(-1) = -1 - 3 + 9 + 5 = 10$, $f(3) = 27 - 27 - 27 + 5 = -22$."
+      },
+      "answer": "Local maximum at $(-1, 10)$; local minimum at $(3, -22)$."
+    },
+    {
+      "id": 2,
+      "topic": "Linear Algebra - Eigenvalues",
+      "question": "Find the eigenvalues of the matrix $A = \\begin{pmatrix} 2 & 1 \\\\ 1 & 2 \\end{pmatrix}$.",
+      "steps": {
+        "step_1": "Form the characteristic equation: $\\det(A - \\lambda I) = (2-\\lambda)^2 - 1 = 0$.",
+        "step_2": "Solve: $(2-\\lambda)^2 = 1 \\Rightarrow 2-\\lambda = \\pm 1 \\Rightarrow \\lambda = 1 \\text{ or } \\lambda = 3$."
+      },
+      "answer": "$\\lambda = 1$ and $\\lambda = 3$."
+    },
+    {
+      "id": 3,
+      "topic": "Calculus - Integration by Parts",
+      "question": "Evaluate the definite integral $\\displaystyle\\int_0^1 x e^x \\, dx$.",
+      "steps": {
+        "step_1": "Apply integration by parts with $u = x$, $dv = e^x dx$, so $du = dx$, $v = e^x$.",
+        "step_2": "Antiderivative: $\\int x e^x \\, dx = x e^x - \\int e^x \\, dx = x e^x - e^x$.",
+        "step_3": "Evaluate from $0$ to $1$: at $x=1$, $(1 \\cdot e - e) = 0$; at $x=0$, $(0 - 1) = -1$. Result $= 0 - (-1) = 1$."
+      },
+      "answer": "$1$"
+    },
+    {
+      "id": 4,
+      "topic": "Differential Equations - Separable ODE",
+      "question": "Solve $\\dfrac{dy}{dx} = 2xy$ with initial condition $y(0) = 1$.",
+      "steps": {
+        "step_1": "Separate variables: $\\dfrac{dy}{y} = 2x \\, dx$.",
+        "step_2": "Integrate both sides: $\\ln|y| = x^2 + C$.",
+        "step_3": "Apply $y(0) = 1$: $\\ln(1) = 0 + C \\Rightarrow C = 0$.",
+        "step_4": "Exponentiate to solve for $y$: $y = e^{x^2}$."
+      },
+      "answer": "$y = e^{x^2}$"
+    },
+    {
+      "id": 5,
+      "topic": "Series - Convergence",
+      "question": "Determine whether the series $\\displaystyle\\sum_{n=1}^{\\infty} \\dfrac{1}{n^2}$ converges, and state its sum if known.",
+      "steps": {
+        "step_1": "Identify this as a $p$-series with $p = 2$.",
+        "step_2": "Apply the $p$-series test: since $p = 2 > 1$, the series converges.",
+        "step_3": "Recall the known closed form (Basel problem): the sum equals $\\dfrac{\\pi^2}{6}$."
+      },
+      "answer": "Converges; sum $= \\dfrac{\\pi^2}{6}$."
+    },
+    {
+      "id": 6,
+      "topic": "Multivariable Calculus - Partial Derivatives",
+      "question": "For $f(x, y) = x^2 y + y^3$, find $\\dfrac{\\partial f}{\\partial x}$ and $\\dfrac{\\partial f}{\\partial y}$ at the point $(1, 2)$.",
+      "steps": {
+        "step_1": "Compute $\\dfrac{\\partial f}{\\partial x} = 2xy$.",
+        "step_2": "Compute $\\dfrac{\\partial f}{\\partial y} = x^2 + 3y^2$.",
+        "step_3": "Evaluate at $(1,2)$: $\\dfrac{\\partial f}{\\partial x} = 2(1)(2) = 4$, $\\dfrac{\\partial f}{\\partial y} = 1 + 3(4) = 13$."
+      },
+      "answer": "$\\dfrac{\\partial f}{\\partial x} = 4$, $\\dfrac{\\partial f}{\\partial y} = 13$ at $(1,2)$."
+    },
+    {
+      "id": 7,
+      "topic": "Probability",
+      "question": "A fair six-sided die is rolled twice. What is the probability that the sum of the two rolls equals $7$?",
+      "steps": {
+        "step_1": "Total number of equally likely outcomes: $6 \\times 6 = 36$.",
+        "step_2": "Count favorable outcomes summing to $7$: $(1,6),(2,5),(3,4),(4,3),(5,2),(6,1)$ = $6$ outcomes.",
+        "step_3": "Compute probability: $\\dfrac{6}{36} = \\dfrac{1}{6}$."
+      },
+      "answer": "$\\dfrac{1}{6}$"
+    },
+    {
+      "id": 8,
+      "topic": "Linear Algebra - Determinants",
+      "question": "Compute the determinant of the matrix $\\begin{pmatrix} 1 & 2 & 3 \\\\ 0 & 1 & 4 \\\\ 5 & 6 & 0 \\end{pmatrix}$.",
+      "steps": {
+        "step_1": "Expand along the first row: $\\det = 1(1\\cdot 0 - 4\\cdot 6) - 2(0\\cdot 0 - 4\\cdot 5) + 3(0\\cdot 6 - 1\\cdot 5)$.",
+        "step_2": "Compute each term: $1(-24) = -24$, $-2(-20) = 40$, $3(-5) = -15$.",
+        "step_3": "Sum the terms: $-24 + 40 - 15 = 1$."
+      },
+      "answer": "$1$"
+    },
+    {
+      "id": 9,
+      "topic": "Calculus - Limits via Taylor Series",
+      "question": "Evaluate the limit: $\\displaystyle\\lim_{x \\to 0} \\dfrac{\\sin x - x}{x^3}$.",
+      "steps": {
+        "step_1": "Write the Taylor expansion: $\\sin x = x - \\dfrac{x^3}{6} + O(x^5)$.",
+        "step_2": "Substitute: $\\sin x - x = -\\dfrac{x^3}{6} + O(x^5)$.",
+        "step_3": "Divide by $x^3$: $\\dfrac{\\sin x - x}{x^3} = -\\dfrac{1}{6} + O(x^2)$.",
+        "step_4": "Take the limit as $x \\to 0$: result $= -\\dfrac{1}{6}$."
+      },
+      "answer": "$-\\dfrac{1}{6}$"
+    },
+    {
+      "id": 10,
+      "topic": "Linear Algebra - Systems of Equations",
+      "question": "Solve the system: $x + 2y = 5$ and $3x - y = 1$.",
+      "steps": {
+        "step_1": "Solve the first equation for $x$: $x = 5 - 2y$.",
+        "step_2": "Substitute into the second equation: $3(5-2y) - y = 1 \\Rightarrow 15 - 7y = 1$.",
+        "step_3": "Solve for $y$: $-7y = -14 \\Rightarrow y = 2$.",
+        "step_4": "Back-substitute to find $x$: $x = 5 - 2(2) = 1$."
+      },
+      "answer": "$x = 1, y = 2$"
+    }
+  ]
+}

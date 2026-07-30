@@ -55,6 +55,17 @@ class BehavioralTests(unittest.TestCase):
             ],
         )
 
+    def test_sentence_splitter_keeps_numbered_step_with_content(self):
+        self.assertEqual(
+            split_sentences(
+                "1. Differentiate $f(x)=x^2$. 2. Set $f'(x)=0$."
+            ),
+            [
+                "1. Differentiate $f(x)=x^2$.",
+                "2. Set $f'(x)=0$.",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
