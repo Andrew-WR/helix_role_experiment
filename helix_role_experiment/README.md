@@ -167,10 +167,11 @@ python scripts/06b_falsify_generalized_helix.py \
 python scripts/06c_behavioral_helix_interventions.py \
   --config configs/qwen_27b_kaggle_smoke.json \
   --layer 63 \
-  --problems-per-family 1 \
+  --problems 1 \
   --rollouts 1 \
   --benchmark math500 \
   --math500-levels 2,3 \
+  --calibration-problems 4 \
   --controls core \
   --generation-safety-ceiling 8192 \
   --pulse-tokens 16 \
@@ -236,12 +237,18 @@ simplify that part of the model, not a p-value; discovery-scale replication
 remains problem-grouped.
 
 `06c_behavioral_helix_interventions.py` is the compact behavioral causal test
-that replaces the one-token assay for substantive conclusions; it requires the
-raw prefix activations and metadata written by file 05 but not a completed 06b
-run. It does not read the old Fourier traces, k=1 planes, or projected
-coordinates: it refits the generalized helix directly in the raw activation
-space. Token counts are reused from file 05b when present and otherwise computed
-directly, so file 05b is optional. It adapts the
+that replaces the one-token assay for substantive conclusions. It is
+self-contained: files 01-05, 05b, and 06b do not need to be run. After loading
+the model once, file 06c generates four small modular-arithmetic calibration
+problems, records only their concise state trajectories at the requested layer,
+and fits the generalized helix directly in raw activation space. This compact
+calibration is cached as
+`behavioral_helix_internal_calibration_layer_<LAYER>.npz`; reruns in the same
+Kaggle environment reuse it automatically. The cache is updated atomically
+after every one-token probe, so an interrupted calibration resumes at the next
+state rather than starting over. Use
+`--rebuild-internal-calibration` only when intentionally replacing that cache.
+It then adapts the
 counterfactual-rollout principle from *Thought Anchors*: apply a brief
 activation pulse (16 tokens by default), remove it, and measure its downstream
 influence on the reasoning trace and final answer. It uses two contexts:
@@ -265,9 +272,8 @@ defaults follow the model's recommended thinking-mode sampling settings
 (`temperature=1.0`, `top_p=0.95`, `top_k=20`). The default behavioral task is a
 deterministically selected integer-answer MATH-500 problem at level 2 or 3.
 The iterative-state helix is fitted only on the existing controlled
-activations, so MATH-500 is a held-out cross-task transfer test rather than
-geometry training data. The old synthetic benchmark remains available with
-`--benchmark controlled`.
+calibration prompts generated inside file 06c, so MATH-500 is a held-out
+cross-task transfer test rather than geometry training data.
 
 There is no ordinary reasoning-token budget. Generation stops at a complete
 `FINAL:` line or EOS. `--generation-safety-ceiling 8192` is only an emergency

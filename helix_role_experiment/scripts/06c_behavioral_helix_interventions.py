@@ -6,11 +6,12 @@ import json
 import sys
 import time
 from collections import defaultdict
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 
-from _common import parse_layer_spec, read_csv, write_csv
+from _common import write_csv
 from helix_role_experiment.benchmarks import load_math500_integer_problems
 from helix_role_experiment.behavioral import (
     anchor_sentence_fraction,
@@ -20,15 +21,16 @@ from helix_role_experiment.behavioral import (
     repeated_sentence_fraction,
 )
 from helix_role_experiment.config import (
+    config_hash,
     ensure_output_dirs,
     load_config,
-    read_jsonl,
     seed_everything,
 )
 from helix_role_experiment.controlled_tasks import (
     ControlledProblem,
-    generate_suite,
+    generate_iterative_problem,
 )
+from helix_role_experiment.counterfactuals import build_progress_position_cross
 from helix_role_experiment.models import huggingface_collector_from_config
 
 
@@ -214,25 +216,174 @@ def generated_metrics(
     }
 
 
-def select_problems(
-    problems: dict[str, ControlledProblem],
-    per_family: int,
-    requested_families: set[str] | None = None,
-) -> list[ControlledProblem]:
-    by_family: dict[str, list[ControlledProblem]] = defaultdict(list)
-    for problem in problems.values():
-        by_family[problem.family].append(problem)
-    output = []
-    for family in sorted(by_family):
-        if requested_families is not None and family not in requested_families:
-            continue
-        output.extend(
-            sorted(
-                by_family[family],
-                key=lambda value: value.problem_id,
-            )[:per_family]
+def fit_internal_calibration_geometry(
+    backend,
+    geometry_code,
+    config: dict,
+    paths: dict[str, Path],
+    layer: int,
+    problem_count: int,
+    rebuild: bool,
+):
+    """Collect the minimal concise trajectories needed by file 06c itself."""
+
+    seed = int(config["study"]["seed"]) + 660
+    cache_key = config_hash(
+        {
+            "model": config["model"],
+            "layer": layer,
+            "problem_count": problem_count,
+            "seed": seed,
+            "calibration": "iterative_concise_v1",
+        }
+    )
+    cache_path = (
+        paths["tables"]
+        / f"behavioral_helix_internal_calibration_layer_{layer}.npz"
+    )
+    calibration_rng = np.random.default_rng(seed)
+    problems = [
+        generate_iterative_problem(index, calibration_rng)
+        for index in range(problem_count)
+    ]
+    concise_variants = [
+        variant
+        for problem in problems
+        for variant in build_progress_position_cross(problem)
+        if variant.condition == "concise"
+    ]
+    rows = None
+    activations = None
+    token_counts = None
+    cache_complete = False
+    if cache_path.is_file() and not rebuild:
+        try:
+            with np.load(cache_path, allow_pickle=False) as data:
+                if str(data["cache_key"].item()) == cache_key:
+                    rows = json.loads(str(data["rows_json"].item()))
+                    activations = np.asarray(
+                        data["activations"],
+                        dtype=np.float32,
+                    )
+                    token_counts = np.asarray(
+                        data["token_counts"],
+                        dtype=np.float64,
+                    )
+                    cache_complete = bool(data["complete"].item())
+                    if not (
+                        len(rows)
+                        == len(activations)
+                        == len(token_counts)
+                        <= len(concise_variants)
+                    ):
+                        raise ValueError("calibration cache is misaligned")
+                    if (
+                        cache_complete
+                        and len(rows) != len(concise_variants)
+                    ):
+                        raise ValueError(
+                            "complete calibration cache is truncated"
+                        )
+                    print(
+                        (
+                            "Reused"
+                            if cache_complete
+                            else "Resuming"
+                        )
+                        + f" {len(rows)}/{len(concise_variants)} internal "
+                        f"calibration states from {cache_path}",
+                        flush=True,
+                    )
+        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+            print(
+                f"Ignoring incomplete calibration cache {cache_path}",
+                flush=True,
+            )
+
+    if rows is None or not cache_complete:
+        if rows is None:
+            rows = []
+            activation_values = []
+            token_values = []
+        else:
+            activation_values = list(activations)
+            token_values = list(token_counts)
+        temporary_cache = cache_path.with_suffix(".tmp.npz")
+        for index in range(len(rows), len(concise_variants)):
+            variant = concise_variants[index]
+            row = asdict(variant)
+            formatted = backend.format_prompt(row["text"])
+            token_count = len(
+                backend.tokenizer(
+                    formatted,
+                    add_special_tokens=True,
+                )["input_ids"]
+            )
+            generated = backend.collect(
+                row["text"],
+                [layer],
+                1,
+                seed + index,
+                temperature=0.0,
+                disable_eos=True,
+                capture_activations=True,
+                capture_eos_logits=True,
+            )
+            row["sentence_count_proxy"] = row["text"].count(".")
+            row["termination_allowed"] = int(
+                row["termination_allowed"]
+            )
+            row["eos_logit"] = generated.eos_logits[-1]
+            for column in geometry_code.OPERATION_COLUMNS:
+                operation = column.removeprefix("operation_")
+                row[column] = int(row["operation"] == operation)
+            rows.append(row)
+            activation_values.append(
+                generated.activations_by_layer[layer][-1]
+            )
+            token_values.append(token_count)
+            activations = np.asarray(
+                activation_values,
+                dtype=np.float32,
+            )
+            token_counts = np.asarray(token_values, dtype=np.float64)
+            np.savez_compressed(
+                temporary_cache,
+                cache_key=np.asarray(cache_key),
+                complete=np.asarray(
+                    len(rows) == len(concise_variants)
+                ),
+                rows_json=np.asarray(json.dumps(rows)),
+                activations=activations.astype(np.float16),
+                token_counts=token_counts,
+            )
+            temporary_cache.replace(cache_path)
+            print(
+                f"Internal calibration {index + 1}/"
+                f"{len(concise_variants)}",
+                flush=True,
+            )
+        print(
+            f"Cached internal calibration at {cache_path}",
+            flush=True,
         )
-    return output
+
+    centered = geometry_code.center_within_problem_trajectory(
+        activations,
+        rows,
+    )
+    ridge = float(config["analysis"].get("ridge", 0.001))
+    geometry, selection = geometry_code.fit_geometry(
+        rows,
+        centered,
+        token_counts,
+        ridge,
+    )
+    write_csv(
+        paths["tables"] / "behavioral_helix_calibration_selection.csv",
+        selection,
+    )
+    return geometry, rows
 
 
 def summarize(rows: list[dict], assay_rows: list[dict]) -> list[dict]:
@@ -566,14 +717,35 @@ def main() -> None:
     )
     parser.add_argument("--config", required=True)
     parser.add_argument("--layer", type=int, required=True)
-    parser.add_argument("--problems-per-family", type=int, default=1)
+    parser.add_argument(
+        "--problems",
+        "--problems-per-family",
+        dest="problems",
+        type=int,
+        default=1,
+        help="Number of held-out MATH-500 problems.",
+    )
+    parser.add_argument(
+        "--calibration-problems",
+        type=int,
+        default=4,
+        help=(
+            "Small synthetic problems used internally to fit the helix. "
+            "Their concise state activations are cached after the first run."
+        ),
+    )
+    parser.add_argument(
+        "--rebuild-internal-calibration",
+        action="store_true",
+        help="Ignore and replace file 06c's own layer calibration cache.",
+    )
     parser.add_argument(
         "--benchmark",
-        choices=("math500", "controlled"),
+        choices=("math500",),
         default="math500",
         help=(
             "Behavioral task. math500 uses deterministic level 2-3 integer-"
-            "answer MATH-500 items; controlled retains the synthetic tasks."
+            "answer MATH-500 items."
         ),
     )
     parser.add_argument(
@@ -588,14 +760,6 @@ def main() -> None:
         "--math500-levels",
         default="2,3",
         help="Comma-separated MATH-500 difficulty levels.",
-    )
-    parser.add_argument(
-        "--families",
-        default="all",
-        help=(
-            "'all' or a comma-separated subset of iterative_state_machine,"
-            "fictional_ontology,dependency_graph"
-        ),
     )
     parser.add_argument("--rollouts", type=int, default=1)
     parser.add_argument(
@@ -621,8 +785,10 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
-    if args.problems_per_family <= 0:
-        raise ValueError("--problems-per-family must be positive")
+    if args.problems <= 0:
+        raise ValueError("--problems must be positive")
+    if args.calibration_problems < 3:
+        raise ValueError("--calibration-problems must be at least 3")
     if args.rollouts <= 0:
         raise ValueError("--rollouts must be positive")
     if args.generation_safety_ceiling <= 0 or args.pulse_tokens <= 0:
@@ -646,188 +812,57 @@ def main() -> None:
     config = load_config(args.config)
     paths = ensure_output_dirs(config)
     rng = seed_everything(int(config["study"]["seed"]) + 663)
-    observational = read_csv(paths["tables"] / "observational_cross.csv")
-    available_layers = sorted({int(row["layer"]) for row in observational})
-    layer = parse_layer_spec(str(args.layer), available_layers)[0]
-    prefixes = {
-        row["variant_id"]: row
-        for row in read_jsonl(paths["root"] / "counterfactual_prefixes.jsonl")
-    }
-    token_path = paths["tables"] / "counterfactual_actual_token_counts.csv"
-    token_lookup = (
-        {
-            row["variant_id"]: int(row["actual_formatted_token_count"])
-            for row in read_csv(token_path)
-        }
-        if token_path.is_file()
-        else {}
+    print(
+        "Standalone 06c: no outputs from files 01-05, 05b, or 06b are read.",
+        flush=True,
     )
-    with np.load(
-        paths["tables"] / "counterfactual_activations.npz",
-        allow_pickle=False,
-    ) as data:
-        activations = np.asarray(data["activations"])
-        variant_ids = data["variant_ids"].astype(str)
-        activation_layers = data["layers"].astype(int)
-    if len(observational) != len(activations):
-        raise ValueError("observational CSV and activation NPZ disagree")
-    for index, row in enumerate(observational):
-        if (
-            row["variant_id"] != variant_ids[index]
-            or int(row["layer"]) != int(activation_layers[index])
-        ):
-            raise ValueError("observational and activation rows are misaligned")
-
-    all_problems = {
-        problem.problem_id: problem
-        for problem in generate_suite(
-            int(config["tasks"]["problems_per_family"]),
-            int(config["study"]["seed"]),
-        )
-    }
-    available_families = {problem.family for problem in all_problems.values()}
-    requested_families = None
-    if args.benchmark == "math500":
-        if args.families not in ("all", "iterative_state_machine"):
-            raise ValueError(
-                "MATH-500 transfers the iterative-state geometry; omit "
-                "--families or set it to iterative_state_machine"
-            )
-        requested_families = {"iterative_state_machine"}
-    elif args.families != "all":
-        requested_families = {
-            value.strip()
-            for value in args.families.split(",")
-            if value.strip()
-        }
-        missing_families = requested_families - available_families
-        if missing_families:
-            raise ValueError(
-                f"unknown families: {sorted(missing_families)}"
-            )
-    selected_problems = select_problems(
-        all_problems,
-        args.problems_per_family,
-        requested_families,
+    math500_path = (
+        Path(args.math500_path)
+        if args.math500_path
+        else paths["root"] / "math500_test.jsonl"
     )
-    if not selected_problems:
-        raise ValueError("no controlled problems were selected")
-    if args.benchmark == "math500":
-        math500_path = (
-            Path(args.math500_path)
-            if args.math500_path
-            else paths["root"] / "math500_test.jsonl"
-        )
-        evaluation_problems = load_math500_integer_problems(
-            len(selected_problems),
-            math500_levels,
-            int(config["study"]["seed"]) + 663,
-            math500_path,
-        )
-    else:
-        evaluation_problems = selected_problems
-    evaluation_pairs = list(zip(selected_problems, evaluation_problems))
+    evaluation_problems = load_math500_integer_problems(
+        args.problems,
+        math500_levels,
+        int(config["study"]["seed"]) + 663,
+        math500_path,
+    )
     print("Loading model for behavioral interventions...", flush=True)
     backend = huggingface_collector_from_config(
         config["model"],
         config["collection"],
     )
+    layer = int(args.layer)
+    if layer < 0 or layer >= len(backend.layers):
+        raise ValueError(
+            f"layer {layer} is invalid; model has {len(backend.layers)} layers"
+        )
     print(
         f"Loaded model; testing layer {layer} on "
-        f"{len(evaluation_pairs)} {args.benchmark} problems",
+        f"{len(evaluation_problems)} MATH-500 problems",
         flush=True,
     )
-    indices = np.flatnonzero(activation_layers == layer)
-    layer_rows = [observational[index] for index in indices]
-    layer_activations = np.asarray(activations[indices])
-    centered = geometry_code.center_within_problem_trajectory(
-        layer_activations,
-        layer_rows,
+    geometry, _calibration_rows = fit_internal_calibration_geometry(
+        backend,
+        geometry_code,
+        config,
+        paths,
+        layer,
+        args.calibration_problems,
+        args.rebuild_internal_calibration,
     )
-    ordinary = np.asarray(
-        [
-            row["condition"] in geometry_code.TRAJECTORY_CONDITIONS
-            for row in layer_rows
-        ],
-        dtype=bool,
-    )
-    ordinary_rows = [
-        row for row, keep in zip(layer_rows, ordinary) if keep
-    ]
-    ordinary_centered = centered[ordinary]
-    missing_token_counts = [
-        row["variant_id"]
-        for row in ordinary_rows
-        if row["variant_id"] not in token_lookup
-    ]
-    for variant_id in missing_token_counts:
-        formatted = backend.format_prompt(prefixes[variant_id]["text"])
-        token_lookup[variant_id] = len(
-            backend.tokenizer(
-                formatted,
-                add_special_tokens=True,
-            )["input_ids"]
-        )
-    if missing_token_counts:
-        print(
-            f"Computed {len(missing_token_counts)} tokenizer counts directly; "
-            "file 05b is not required",
-            flush=True,
-        )
-    ordinary_tokens = np.asarray(
-        [token_lookup[row["variant_id"]] for row in ordinary_rows],
-        dtype=np.float64,
-    )
-    ridge = float(config["analysis"].get("ridge", 0.001))
-    geometry_by_problem = {}
-    for problem in selected_problems:
-        keep = np.asarray(
-            [
-                row["problem_id"] != problem.problem_id
-                for row in ordinary_rows
-            ],
-            dtype=bool,
-        )
-        geometry_by_problem[problem.problem_id] = geometry_code.fit_geometry(
-            [row for row, value in zip(ordinary_rows, keep) if value],
-            ordinary_centered[keep],
-            ordinary_tokens[keep],
-            ridge,
-        )[0]
 
     torch = backend.torch
     outcomes: list[dict] = []
     assay_rows: list[dict] = []
-    rows_by_problem: dict[str, list[dict]] = defaultdict(list)
-    for row in layer_rows:
-        rows_by_problem[row["problem_id"]].append(row)
     baseline_pilots = {}
     pilot_rows = []
-    for problem_index, (
-        geometry_problem,
-        problem,
-    ) in enumerate(evaluation_pairs):
-        concise = sorted(
-            [
-                row
-                for row in rows_by_problem[geometry_problem.problem_id]
-                if row["condition"] == "concise"
-            ],
-            key=lambda row: float(row["structural_progress"]),
-        )
-        if len(concise) < 3:
-            raise ValueError(
-                f"{geometry_problem.problem_id} has too few concise states"
-            )
-        target = min(
-            concise[1:-1],
-            key=lambda row: abs(float(row["structural_progress"]) - 0.5),
-        )
+    for problem_index, problem in enumerate(evaluation_problems):
         incorrect = wrong_answer(problem)
         for scenario in ("accelerate", "repair_wrong_commitment"):
             prompt = evaluation_prompt(
                 problem,
-                prefixes[target["variant_id"]]["text"],
+                "",
                 scenario,
                 incorrect,
             )
@@ -914,43 +949,23 @@ def main() -> None:
     )
     control_count = 4 if args.controls == "core" else 6
     total_generations = (
-        len(evaluation_pairs) * 2 * args.rollouts * control_count
+        len(evaluation_problems) * 2 * args.rollouts * control_count
     )
     completed_generations = 0
 
-    for problem_index, (
-        geometry_problem,
-        problem,
-    ) in enumerate(evaluation_pairs):
-        concise = sorted(
-            [
-                row
-                for row in rows_by_problem[geometry_problem.problem_id]
-                if row["condition"] == "concise"
-            ],
-            key=lambda row: float(row["structural_progress"]),
-        )
-        if len(concise) < 3:
-            raise ValueError(
-                f"{geometry_problem.problem_id} has too few concise states"
-            )
-        target = min(
-            concise[1:-1],
-            key=lambda row: abs(float(row["structural_progress"]) - 0.5),
-        )
-        mid_progress = float(target["structural_progress"])
-        geometry = geometry_by_problem[geometry_problem.problem_id]
-        initial_progress = float(concise[0]["structural_progress"])
-        final_progress = float(concise[-1]["structural_progress"])
+    initial_progress = 0.0
+    final_progress = 1.0
+    geometry_family = "iterative_state_machine"
+    for problem_index, problem in enumerate(evaluation_problems):
 
         def helix_delta(
             desired: float,
             source: float,
         ) -> np.ndarray:
             return geometry.helix_value(
-                geometry_problem.family,
+                geometry_family,
                 desired,
-            ) - geometry.helix_value(geometry_problem.family, source)
+            ) - geometry.helix_value(geometry_family, source)
 
         def linear_delta(
             desired: float,
@@ -966,11 +981,11 @@ def main() -> None:
         ) -> np.ndarray:
             return linear_delta(desired, source) + (
                 geometry.closed_after_axis_value(
-                    geometry_problem.family,
+                    geometry_family,
                     desired,
                 )
                 - geometry.closed_after_axis_value(
-                    geometry_problem.family,
+                    geometry_family,
                     source,
                 )
             )
@@ -986,23 +1001,14 @@ def main() -> None:
         incorrect = wrong_answer(problem)
         for scenario in ("accelerate", "repair_wrong_commitment"):
             source_progress = (
-                mid_progress
-                if args.benchmark == "controlled"
-                else (
-                    initial_progress
-                    if scenario == "accelerate"
-                    else final_progress
-                )
+                initial_progress
+                if scenario == "accelerate"
+                else final_progress
             )
             desired_progress = (
                 final_progress
                 if scenario == "accelerate"
                 else initial_progress
-            )
-            opposite_progress = (
-                initial_progress
-                if scenario == "accelerate"
-                else final_progress
             )
             desired = helix_delta(desired_progress, source_progress)
             desired_norm = float(np.linalg.norm(desired))
@@ -1012,11 +1018,6 @@ def main() -> None:
                 )
             opposite = (
                 -desired
-                if args.benchmark == "math500"
-                else geometry_code.match_norm(
-                    helix_delta(opposite_progress, source_progress),
-                    desired_norm,
-                )[0]
             )
             linear = geometry_code.match_norm(
                 linear_delta(desired_progress, source_progress),
@@ -1052,7 +1053,7 @@ def main() -> None:
                 }
             prompt = evaluation_prompt(
                 problem,
-                prefixes[target["variant_id"]]["text"],
+                "",
                 scenario,
                 incorrect,
             )
@@ -1161,8 +1162,8 @@ def main() -> None:
                             "control": control,
                             "benchmark": args.benchmark,
                             "benchmark_level": problem.metadata.get("level"),
-                            "geometry_problem_id": (
-                                geometry_problem.problem_id
+                            "geometry_calibration_problems": (
+                                args.calibration_problems
                             ),
                             "source_progress": source_progress,
                             "desired_progress": desired_progress,
