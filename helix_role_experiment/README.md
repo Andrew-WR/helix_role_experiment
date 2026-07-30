@@ -167,7 +167,7 @@ python scripts/06b_falsify_generalized_helix.py \
 python scripts/06c_behavioral_helix_interventions.py \
   --config configs/qwen_9b_base_kaggle_smoke.json \
   --layer 31 \
-  --math500-level 4 \
+  --math500-level 1 \
   --generation-safety-ceiling 8192 \
   --progress-step 0.05 \
   --transport-alpha 1.0 \
@@ -234,7 +234,7 @@ remains problem-grouped.
 
 `06c_behavioral_helix_interventions.py` is the compact behavioral causal test
 and is self-contained: files 01-05, 05b, and 06b do not need to be run. It
-selects two fixed, disjoint, level-4 integer-answer MATH-500 problems from the
+selects two fixed, disjoint, level-1 integer-answer MATH-500 problems from the
 study seed and writes their identities before generation. The first is the
 calibration problem; the second is the test problem. Neither is silently
 replaced if Qwen fails it.
@@ -269,7 +269,7 @@ seed.
 Qwen thinking mode is enabled explicitly through its chat template. Generation
 defaults follow the model's recommended thinking-mode sampling settings
 (`temperature=1.0`, `top_p=0.95`, `top_k=20`). The default behavioral task is a
-deterministically selected integer-answer MATH-500 problem at level 4.
+deterministically selected integer-answer MATH-500 problem at level 1.
 
 There is no ordinary reasoning-token budget. Generation stops at a complete
 `FINAL:` line or EOS. `--generation-safety-ceiling 8192` is only an emergency

@@ -334,7 +334,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional local MATH-500 test.jsonl.",
     )
-    parser.add_argument("--math500-level", type=int, default=4)
+    parser.add_argument("--math500-level", type=int, default=1)
     parser.add_argument("--generation-safety-ceiling", type=int, default=8192)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-p", type=float, default=0.95)
