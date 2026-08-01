@@ -178,36 +178,49 @@ def sentence_boundaries(
     return result
 
 
-def annotation_json_schema() -> dict[str, Any]:
+def annotation_json_schema(
+    sentence_ids: list[str] | None = None,
+) -> dict[str, Any]:
     tri = {"type": "string", "enum": ["yes", "no", "uncertain"]}
+    sentence_id_schema: dict[str, Any] = {"type": "string"}
+    if sentence_ids is not None:
+        if not sentence_ids:
+            raise ValueError("sentence_ids cannot be empty")
+        sentence_id_schema["enum"] = list(sentence_ids)
+    annotations_schema: dict[str, Any] = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "sentence_id", "mathematically_correct", "novel",
+                "advances_valid_path", "primary_label", "evidence",
+                "state_change", "needs_review",
+            ],
+            "properties": {
+                "sentence_id": sentence_id_schema,
+                "mathematically_correct": tri,
+                "novel": tri,
+                "advances_valid_path": tri,
+                "primary_label": {
+                    "type": "string", "enum": list(EVENT_LABELS)
+                },
+                "evidence": {"type": "string"},
+                "state_change": {"type": "string"},
+                "needs_review": {"type": "boolean"},
+            },
+        },
+    }
+    if sentence_ids is not None:
+        annotations_schema["minItems"] = len(sentence_ids)
+        annotations_schema["maxItems"] = len(sentence_ids)
     return {
         "type": "object",
         "additionalProperties": False,
         "required": ["annotations"],
         "properties": {
             "annotations": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": [
-                        "sentence_id", "mathematically_correct", "novel",
-                        "advances_valid_path", "primary_label", "evidence",
-                        "state_change", "needs_review",
-                    ],
-                    "properties": {
-                        "sentence_id": {"type": "string"},
-                        "mathematically_correct": tri,
-                        "novel": tri,
-                        "advances_valid_path": tri,
-                        "primary_label": {
-                            "type": "string", "enum": list(EVENT_LABELS)
-                        },
-                        "evidence": {"type": "string"},
-                        "state_change": {"type": "string"},
-                        "needs_review": {"type": "boolean"},
-                    },
-                },
+                **annotations_schema,
             }
         },
     }

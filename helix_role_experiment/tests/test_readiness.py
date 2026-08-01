@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from helix_role_experiment.readiness import (
-    ExponentialProbe, SentenceSteeringController, assign_group_splits,
+    ExponentialProbe, SentenceSteeringController, annotation_json_schema, assign_group_splits,
     build_survival_rows, concordance_index, fit_exponential_probe,
     sentence_boundaries, validate_annotations,
 )
@@ -21,6 +21,16 @@ class CharacterTokenizer:
 
 
 class ReadinessTests(unittest.TestCase):
+    def test_chunk_schema_locks_sentence_ids_and_count(self):
+        schema = annotation_json_schema(["S0002", "S0003"])
+        annotations = schema["properties"]["annotations"]
+        self.assertEqual(annotations["minItems"], 2)
+        self.assertEqual(annotations["maxItems"], 2)
+        self.assertEqual(
+            annotations["items"]["properties"]["sentence_id"]["enum"],
+            ["S0002", "S0003"],
+        )
+
     def test_sentence_alignment_protects_decimal_and_latex(self):
         text = r"<think>Use 3.14 and $x=2.5$. Then solve.</think> FINAL: 4"
         rows = sentence_boundaries(CharacterTokenizer(), text, [ord(value) for value in text])

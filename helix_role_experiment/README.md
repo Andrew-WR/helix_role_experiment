@@ -88,13 +88,17 @@ math delimiters, and environments.
 
 Stage 07b obtains `OPENAI_API_KEY` from the environment, or from the Kaggle
 secret of the same name, and never writes the key. It sends concurrent,
-immediate Responses API calls with strict Structured Outputs. Each completed
-trajectory is saved separately, so an interrupted run resumes without paying
-to relabel finished work. Sentence spans and IDs are fixed locally;
-exact-evidence and cardinality validation rejects hallucinated labels, with up
-to three corrective retries. A conservative pre-run estimate is checked
-against the configured USD 5.60 hard guard, and actual token usage/cost is
-written after the run.
+immediate Responses API calls with strict Structured Outputs. Valid results
+from the original whole-trajectory labeler are preserved without rewriting.
+Only missing trajectories are divided into chunks of at most 24 target
+sentences; Luna receives the complete trajectory as read-only context, while
+the schema permits only the current chunk's exact IDs and count. Each chunk is
+saved separately and merged into the original full-result format only after
+all chunks validate, so an interrupted run resumes without paying to relabel
+finished work. Exact-evidence and consistency validation applies per chunk and
+again after merging, with up to three corrective retries. A conservative
+pre-run estimate is checked against the configured USD 5.60 hard guard, and
+actual token usage/cost is written after the run.
 
 Generated code is never run during model collection or steering. Stage 07d
 exports one `humaneval_<condition>.jsonl` file per condition. Evaluate these
