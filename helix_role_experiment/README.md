@@ -61,6 +61,65 @@ python scripts/06_run_causal_interventions.py --config configs/smoke_synthetic.j
 python scripts/07_analyze_results.py --config configs/smoke_synthetic.json
 ```
 
+## Sentence-level next-subgoal readiness experiment
+
+The resource-limited cross-domain pilot uses 50 exactly scoreable MATH-500
+problems and 50 HumanEval problems. SWE-EVO is intentionally deferred: its 48
+repository-scale tasks require an interactive OpenHands/SWE-agent scaffold and
+hundreds of tests, so treating it as one-shot generation would not be a valid
+evaluation. HumanEval lets activation generation remain asynchronous from code
+execution and tests whether the signal extends beyond mathematics.
+
+The design keeps expensive model work separate from labeling and probe fitting:
+
+```bash
+python scripts/07a_collect_sentence_activations.py --config configs/qwen_9b_readiness_kaggle.json
+python scripts/07b_label_subgoal_events.py --config configs/qwen_9b_readiness_kaggle.json prepare
+python scripts/07b_label_subgoal_events.py --config configs/qwen_9b_readiness_kaggle.json run --concurrency 8
+python scripts/07c_fit_survival_probes.py --config configs/qwen_9b_readiness_kaggle.json
+python scripts/07d_run_readiness_steering.py --config configs/qwen_9b_readiness_kaggle.json
+```
+
+Stages 07a and 07d launch two child processes with `CUDA_VISIBLE_DEVICES=0`
+and `1`; each process loads one 4-bit Qwen3.5-9B replica and decodes batches of
+two. Stage 07a stores activations only at locally parsed sentence boundaries.
+The LaTeX-aware scanner protects decimals, abbreviations, inline/fenced code,
+math delimiters, and environments.
+
+Stage 07b obtains `OPENAI_API_KEY` from the environment, or from the Kaggle
+secret of the same name, and never writes the key. It sends concurrent,
+immediate Responses API calls with strict Structured Outputs. Each completed
+trajectory is saved separately, so an interrupted run resumes without paying
+to relabel finished work. Sentence spans and IDs are fixed locally;
+exact-evidence and cardinality validation rejects hallucinated labels, with up
+to three corrective retries. A conservative pre-run estimate is checked
+against the configured USD 5.60 hard guard, and actual token usage/cost is
+written after the run.
+
+Generated code is never run during model collection or steering. Stage 07d
+exports one `humaneval_<condition>.jsonl` file per condition. Evaluate these
+later in a disposable, network-disabled container or VM using the official
+[OpenAI HumanEval evaluator](https://github.com/openai/human-eval); its own
+README warns that model-generated code is untrusted:
+
+```bash
+evaluate_functional_correctness /kaggle/working/qwen9b_readiness/tables/humaneval_baseline.jsonl
+evaluate_functional_correctness /kaggle/working/qwen9b_readiness/tables/humaneval_gated.jsonl
+evaluate_functional_correctness /kaggle/working/qwen9b_readiness/tables/humaneval_always.jsonl
+evaluate_functional_correctness /kaggle/working/qwen9b_readiness/tables/humaneval_random.jsonl
+python scripts/07e_finalize_readiness_results.py --config configs/qwen_9b_readiness_kaggle.json
+```
+
+The primary gate passes only if the same gated method generalizes across math
+and code and achieves either at least 10% fewer output tokens with no more than
+one percentage point accuracy loss, or at least five percentage points higher
+accuracy without increasing mean output tokens. Always-on and random-direction
+conditions are causal controls, not candidate products. This first model can
+only pass `within_model_success`. Re-run the same frozen method with a second
+open model and pass its `readiness_success_gates.json` via
+`--replication-gates`; `commercial_success` remains false until the same
+condition passes both models.
+
 All output paths are controlled by `output.root`. Trace shards are resumable:
 existing deterministic request IDs are not rewritten.
 

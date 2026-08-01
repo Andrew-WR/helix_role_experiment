@@ -61,6 +61,7 @@ class CollectedGeneration:
     tokens: list[str]
     activations_by_layer: dict[int, np.ndarray]
     eos_logits: list[float]
+    token_entropies: list[float]
     reached_eos: bool
     prompt_token_count: int
     text: str
@@ -160,6 +161,7 @@ class SyntheticActivationBackend:
             tokens=[f"<synth-{token}>" for token in token_ids],
             activations_by_layer=activations,
             eos_logits=eos_logits.tolist(),
+            token_entropies=[],
             reached_eos=True,
             prompt_token_count=16,
             text=" ".join(f"<synth-{token}>" for token in token_ids),
@@ -311,6 +313,7 @@ class HuggingFaceTraceCollector:
         intervention: Callable[[int, int, Any], Any] | None = None,
         capture_activations: bool = True,
         capture_eos_logits: bool = True,
+        capture_token_entropies: bool = False,
         stop_regex: str | None = None,
         top_p: float = 1.0,
         top_k: int | None = None,
@@ -369,6 +372,7 @@ class HuggingFaceTraceCollector:
         eos_set = {int(eos_ids)} if isinstance(eos_ids, int) else {int(value) for value in eos_ids or []}
         generated: list[int] = []
         eos_logits: list[float] = []
+        token_entropies: list[float] = []
         past = None
         current_ids = input_ids
         current_mask = attention_mask
@@ -387,6 +391,18 @@ class HuggingFaceTraceCollector:
                     eos_logits.append(float(logits[0, sorted(eos_set)[0]].item()))
                 elif capture_eos_logits:
                     eos_logits.append(float("nan"))
+                if capture_token_entropies:
+                    log_probabilities = torch.log_softmax(
+                        logits.float(), dim=-1
+                    )
+                    token_entropies.append(
+                        float(
+                            -(
+                                log_probabilities.exp()
+                                * log_probabilities
+                            ).sum(dim=-1)[0].item()
+                        )
+                    )
                 if temperature > 0:
                     sampling_logits = logits / temperature
                     if top_k is not None:
@@ -436,6 +452,10 @@ class HuggingFaceTraceCollector:
                     next_token = logits.argmax(dim=-1, keepdim=True)
                 token = int(next_token.item())
                 generated.append(token)
+                if intervention is not None and hasattr(
+                    intervention, "observe_token"
+                ):
+                    intervention.observe_token(token)
                 past = output.past_key_values
                 current_ids = next_token.to(self.input_device)
                 current_mask = torch.cat(
@@ -483,10 +503,292 @@ class HuggingFaceTraceCollector:
             tokens=self.tokenizer.convert_ids_to_tokens(generated),
             activations_by_layer=arrays,
             eos_logits=eos_logits,
+            token_entropies=token_entropies,
             reached_eos=reached_eos,
             prompt_token_count=int(input_ids.shape[1]),
             text=self.tokenizer.decode(generated, skip_special_tokens=False),
         )
+
+    def collect_batch(
+        self,
+        prompts: list[str],
+        layer_indices: list[int],
+        max_new_tokens: int,
+        seeds: list[int],
+        temperature: float = 0.0,
+        disable_eos: bool = False,
+        interventions: list[Callable[[int, int, Any], Any] | None] | None = None,
+        capture_activations: bool = True,
+        capture_eos_logits: bool = True,
+        capture_token_entropies: bool = False,
+        stop_regex: str | None = None,
+        top_p: float = 1.0,
+        top_k: int | None = None,
+        stop_check_interval: int = 1,
+    ) -> list[CollectedGeneration]:
+        """Collect independent generations in one padded decoding batch.
+
+        Each row has its own random generator and optional stateful intervention.
+        Finished rows remain padded in the shared forward pass, but their hooks,
+        token lists, and diagnostics stop immediately.
+        """
+
+        if not prompts:
+            return []
+        if len(prompts) != len(seeds):
+            raise ValueError("one seed is required per prompt")
+        if interventions is None:
+            interventions = [None] * len(prompts)
+        if len(interventions) != len(prompts):
+            raise ValueError("one intervention entry is required per prompt")
+        invalid = [
+            index
+            for index in layer_indices
+            if index < 0 or index >= len(self.layers)
+        ]
+        if invalid:
+            raise ValueError(
+                f"invalid layer indices {invalid}; model has {len(self.layers)} layers"
+            )
+        if not 0.0 < float(top_p) <= 1.0:
+            raise ValueError("top_p must be in (0, 1]")
+        if top_k is not None and int(top_k) <= 0:
+            raise ValueError("top_k must be positive")
+        if int(stop_check_interval) <= 0:
+            raise ValueError("stop_check_interval must be positive")
+
+        torch = self.torch
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        previous_padding_side = getattr(self.tokenizer, "padding_side", "right")
+        self.tokenizer.padding_side = "left"
+        try:
+            formatted = [self.format_prompt(prompt) for prompt in prompts]
+            inputs = self.tokenizer(
+                formatted,
+                return_tensors="pt",
+                padding=True,
+            )
+        finally:
+            self.tokenizer.padding_side = previous_padding_side
+        input_ids = inputs["input_ids"].to(self.input_device)
+        attention_mask = inputs.get(
+            "attention_mask", torch.ones_like(input_ids)
+        ).to(self.input_device)
+        prompt_counts = [int(value) for value in attention_mask.sum(dim=1).tolist()]
+        batch_size = len(prompts)
+        selected_layers = (
+            [self.layers[index] for index in layer_indices]
+            if capture_activations or any(value is not None for value in interventions)
+            else []
+        )
+        captured: dict[int, list[list[np.ndarray]]] = {
+            index: [[] for _ in range(batch_size)] for index in layer_indices
+        }
+        stop_pattern = re.compile(stop_regex) if stop_regex else None
+        active = [True] * batch_size
+        generated: list[list[int]] = [[] for _ in range(batch_size)]
+        eos_logits: list[list[float]] = [[] for _ in range(batch_size)]
+        entropies: list[list[float]] = [[] for _ in range(batch_size)]
+        reached_eos = [False] * batch_size
+        step = 0
+
+        def hook_factory(local_index: int):
+            layer_index = layer_indices[local_index]
+
+            def hook(_module: Any, _inputs: Any, output: Any) -> Any:
+                hidden = hidden_from_output(output)
+                last = hidden[:, -1, :]
+                changed_any = False
+                for row, callback in enumerate(interventions):
+                    if not active[row] or callback is None:
+                        continue
+                    changed = callback(
+                        layer_index,
+                        step,
+                        last[row : row + 1],
+                    )
+                    if not changed_any:
+                        hidden = hidden.clone()
+                        last = hidden[:, -1, :]
+                        changed_any = True
+                    hidden[row : row + 1, -1, :] = changed
+                if capture_activations:
+                    values = (
+                        last.detach()
+                        .to(dtype=self.capture_torch_dtype)
+                        .cpu()
+                        .numpy()
+                    )
+                    for row in range(batch_size):
+                        if active[row]:
+                            captured[layer_index][row].append(values[row])
+                return replace_hidden(output, hidden) if changed_any else output
+
+            return hook
+
+        eos_ids = self.model.generation_config.eos_token_id
+        if eos_ids is None:
+            eos_ids = self.tokenizer.eos_token_id
+        eos_set = (
+            {int(eos_ids)}
+            if isinstance(eos_ids, int)
+            else {int(value) for value in eos_ids or []}
+        )
+        fallback_token = int(
+            self.tokenizer.pad_token_id
+            if self.tokenizer.pad_token_id is not None
+            else next(iter(eos_set), 0)
+        )
+        generators = []
+        for seed in seeds:
+            generator = torch.Generator(device=self.input_device)
+            generator.manual_seed(int(seed))
+            generators.append(generator)
+        past = None
+        current_ids = input_ids
+        current_mask = attention_mask
+
+        with registered_hooks(selected_layers, hook_factory), torch.inference_mode():
+            for step in range(int(max_new_tokens)):
+                output = self.model(
+                    input_ids=current_ids,
+                    attention_mask=current_mask,
+                    past_key_values=past,
+                    use_cache=True,
+                    return_dict=True,
+                )
+                logits = output.logits[:, -1, :]
+                if capture_token_entropies:
+                    log_probabilities = torch.log_softmax(
+                        logits.float(), dim=-1
+                    )
+                    entropy_values = -(
+                        log_probabilities.exp() * log_probabilities
+                    ).sum(dim=-1)
+                next_values: list[int] = []
+                for row in range(batch_size):
+                    if not active[row]:
+                        next_values.append(fallback_token)
+                        continue
+                    if capture_eos_logits:
+                        eos_logits[row].append(
+                            float(logits[row, sorted(eos_set)[0]].item())
+                            if eos_set
+                            else float("nan")
+                        )
+                    if capture_token_entropies:
+                        entropies[row].append(float(entropy_values[row].item()))
+                    row_logits = logits[row : row + 1]
+                    if temperature > 0:
+                        sampling_logits = row_logits / float(temperature)
+                        if top_k is not None:
+                            keep = min(int(top_k), int(sampling_logits.shape[-1]))
+                            threshold = torch.topk(
+                                sampling_logits, keep, dim=-1
+                            ).values[..., -1, None]
+                            sampling_logits = sampling_logits.masked_fill(
+                                sampling_logits < threshold, float("-inf")
+                            )
+                        if top_p < 1.0:
+                            sorted_logits, sorted_indices = torch.sort(
+                                sampling_logits, descending=True, dim=-1
+                            )
+                            cumulative = torch.cumsum(
+                                torch.softmax(sorted_logits, dim=-1), dim=-1
+                            )
+                            remove = cumulative > float(top_p)
+                            remove[..., 1:] = remove[..., :-1].clone()
+                            remove[..., 0] = False
+                            original_remove = torch.zeros_like(
+                                remove, dtype=torch.bool
+                            ).scatter(1, sorted_indices, remove)
+                            sampling_logits = sampling_logits.masked_fill(
+                                original_remove, float("-inf")
+                            )
+                        probabilities = torch.softmax(sampling_logits, dim=-1)
+                        token = int(
+                            torch.multinomial(
+                                probabilities,
+                                1,
+                                generator=generators[row],
+                            ).item()
+                        )
+                    else:
+                        token = int(row_logits.argmax(dim=-1).item())
+                    generated[row].append(token)
+                    callback = interventions[row]
+                    if callback is not None and hasattr(callback, "observe_token"):
+                        callback.observe_token(token)
+                    next_values.append(token)
+                    if not disable_eos and token in eos_set:
+                        active[row] = False
+                        reached_eos[row] = True
+                    elif (
+                        stop_pattern is not None
+                        and (
+                            len(generated[row]) % int(stop_check_interval) == 0
+                            or len(generated[row]) == int(max_new_tokens)
+                        )
+                        and stop_pattern.search(
+                            self.tokenizer.decode(
+                                generated[row], skip_special_tokens=False
+                            )
+                        )
+                    ):
+                        active[row] = False
+                past = output.past_key_values
+                current_ids = torch.as_tensor(
+                    next_values,
+                    device=self.input_device,
+                    dtype=input_ids.dtype,
+                )[:, None]
+                current_mask = torch.cat(
+                    (
+                        current_mask,
+                        torch.ones(
+                            (batch_size, 1),
+                            device=current_mask.device,
+                            dtype=current_mask.dtype,
+                        ),
+                    ),
+                    dim=1,
+                )
+                if not any(active):
+                    break
+
+        results = []
+        for row in range(batch_size):
+            arrays = {}
+            if capture_activations:
+                arrays = {
+                    layer: np.asarray(
+                        captured[layer][row], dtype=self.capture_numpy_dtype
+                    )
+                    for layer in layer_indices
+                }
+                for layer, array in arrays.items():
+                    if len(array) != len(generated[row]):
+                        raise RuntimeError(
+                            f"batch hook/token misalignment at layer {layer}, "
+                            f"row {row}: {len(array)} activations for "
+                            f"{len(generated[row])} generated tokens"
+                        )
+            results.append(
+                CollectedGeneration(
+                    token_ids=generated[row],
+                    tokens=self.tokenizer.convert_ids_to_tokens(generated[row]),
+                    activations_by_layer=arrays,
+                    eos_logits=eos_logits[row],
+                    token_entropies=entropies[row],
+                    reached_eos=reached_eos[row],
+                    prompt_token_count=prompt_counts[row],
+                    text=self.tokenizer.decode(
+                        generated[row], skip_special_tokens=False
+                    ),
+                )
+            )
+        return results
 
     def score_first_transition(
         self,

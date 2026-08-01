@@ -1,0 +1,72 @@
+{
+  "study": {
+    "name": "qwen35_9b_sentence_readiness",
+    "seed": 20260801
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "Qwen/Qwen3.5-9B",
+    "revision": "main",
+    "device": "auto",
+    "dtype": "float16",
+    "trust_remote_code": false,
+    "attn_implementation": "sdpa",
+    "quantization": {
+      "load_in_4bit": true,
+      "bnb_4bit_quant_type": "nf4",
+      "bnb_4bit_use_double_quant": true,
+      "bnb_4bit_compute_dtype": "float16"
+    },
+    "max_memory": {
+      "0": "14GiB",
+      "cpu": "20GiB"
+    },
+    "chat_template_kwargs": {
+      "enable_thinking": true
+    }
+  },
+  "tasks": {
+    "math500_count": 50,
+    "humaneval_count": 50,
+    "math_levels": [1, 2, 3, 4, 5],
+    "math500_path": "/kaggle/working/data/math500_test.jsonl",
+    "humaneval_path": "/kaggle/working/data/HumanEval.jsonl.gz"
+  },
+  "collection": {
+    "layers": "8,16,24,31",
+    "batch_size": 2,
+    "max_new_tokens": 8192,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "stop_check_interval": 8,
+    "capture_token_entropies": false,
+    "activation_dtype": "float16"
+  },
+  "labeling": {
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "low",
+    "max_output_tokens": 10000,
+    "max_cost_usd": 5.6,
+    "concurrency": 8,
+    "validation_attempts": 3,
+    "sdk_retries": 3,
+    "timeout_seconds": 600,
+    "prices_per_million": {
+      "input": 0.2,
+      "output": 1.2
+    }
+  },
+  "probe": {
+    "ridge": 0.001,
+    "trigger_quantile": 0.67
+  },
+  "intervention": {
+    "alpha": 0.5,
+    "pulse_tokens": 4,
+    "conditions": ["gated", "always", "random"]
+  },
+  "output": {
+    "root": "/kaggle/working/qwen9b_readiness"
+  }
+}
