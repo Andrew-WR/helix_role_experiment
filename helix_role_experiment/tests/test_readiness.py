@@ -16,7 +16,7 @@ class CharacterTokenizer:
             "offset_mapping": [(index, index + 1) for index in range(len(text))],
         }
 
-    def decode(self, ids, skip_special_tokens=False):
+    def decode(self, ids, skip_special_tokens=False, **_kwargs):
         return "".join(chr(value) for value in ids)
 
 

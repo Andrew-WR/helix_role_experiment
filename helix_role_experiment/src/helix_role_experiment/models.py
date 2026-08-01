@@ -478,6 +478,7 @@ class HuggingFaceTraceCollector:
                         self.tokenizer.decode(
                             generated,
                             skip_special_tokens=False,
+                            clean_up_tokenization_spaces=False,
                         )
                     )
                 ):
@@ -506,7 +507,11 @@ class HuggingFaceTraceCollector:
             token_entropies=token_entropies,
             reached_eos=reached_eos,
             prompt_token_count=int(input_ids.shape[1]),
-            text=self.tokenizer.decode(generated, skip_special_tokens=False),
+            text=self.tokenizer.decode(
+                generated,
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            ),
         )
 
     def collect_batch(
@@ -732,7 +737,9 @@ class HuggingFaceTraceCollector:
                         )
                         and stop_pattern.search(
                             self.tokenizer.decode(
-                                generated[row], skip_special_tokens=False
+                                generated[row],
+                                skip_special_tokens=False,
+                                clean_up_tokenization_spaces=False,
                             )
                         )
                     ):
@@ -784,7 +791,9 @@ class HuggingFaceTraceCollector:
                     reached_eos=reached_eos[row],
                     prompt_token_count=prompt_counts[row],
                     text=self.tokenizer.decode(
-                        generated[row], skip_special_tokens=False
+                        generated[row],
+                        skip_special_tokens=False,
+                        clean_up_tokenization_spaces=False,
                     ),
                 )
             )

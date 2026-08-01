@@ -39,8 +39,15 @@ class SentenceBoundary:
         return asdict(self)
 
 
-def _token_offsets(tokenizer: Any, text: str, token_ids: list[int]) -> list[tuple[int, int]]:
-    """Return exact offsets and reject tokenizer/decode drift."""
+def _retokenized_char_owners(
+    tokenizer: Any, text: str, token_ids: list[int]
+) -> list[int]:
+    """Fallback for tokenizers without DecodeStream.
+
+    This path is exact only when encoding the decoded text reproduces the
+    original segmentation. Modern Hugging Face tokenizers use the streaming
+    decoder path below and do not require that invalid BPE assumption.
+    """
 
     encoded = tokenizer(
         text,
@@ -52,13 +59,70 @@ def _token_offsets(tokenizer: Any, text: str, token_ids: list[int]) -> list[tupl
         ids = ids[0]
     if [int(value) for value in ids] != [int(value) for value in token_ids]:
         raise ValueError(
-            "decoded output does not retokenize to the captured token IDs; "
-            "sentence activations cannot be aligned safely"
+            "this tokenizer lacks DecodeStream and decoded output uses a "
+            "different valid BPE segmentation; install tokenizers>=0.21"
         )
     offsets = encoded["offset_mapping"]
     if offsets and isinstance(offsets[0], list) and len(offsets[0]) and isinstance(offsets[0][0], (list, tuple)):
         offsets = offsets[0]
-    return [(int(left), int(right)) for left, right in offsets]
+    owners = [-1] * len(text)
+    for token_index, (left, right) in enumerate(offsets):
+        for character in range(int(left), min(int(right), len(text))):
+            owners[character] = token_index
+    return owners
+
+
+def _token_char_owners(
+    tokenizer: Any, text: str, token_ids: list[int]
+) -> list[int]:
+    """Map decoded characters to the original generated-token indices.
+
+    Decoding and then encoding is not an inverse operation for BPE: adjacent
+    generated tokens may be merged on re-encoding. DecodeStream instead follows
+    the original autoregressive ID stream and correctly buffers split UTF-8 and
+    byte-fallback tokens.
+    """
+
+    backend = getattr(tokenizer, "backend_tokenizer", None)
+    if backend is None:
+        return _retokenized_char_owners(tokenizer, text, token_ids)
+    try:
+        from tokenizers.decoders import DecodeStream
+    except ImportError:
+        return _retokenized_char_owners(tokenizer, text, token_ids)
+
+    stream = DecodeStream(skip_special_tokens=False)
+    chunks: list[str] = []
+    owners: list[int] = []
+    pending_start = 0
+    for token_index, token_id in enumerate(token_ids):
+        chunk = stream.step(backend, int(token_id))
+        if chunk is None:
+            continue
+        chunks.append(chunk)
+        owners.extend([pending_start] * len(chunk))
+        pending_start = token_index + 1
+    streamed = "".join(chunks)
+    if streamed != text:
+        # Wrapper decode settings can differ across Transformers releases. If
+        # ordinary exact retokenization happens to work, it remains safe.
+        try:
+            return _retokenized_char_owners(tokenizer, text, token_ids)
+        except ValueError as exc:
+            mismatch = next(
+                (
+                    index
+                    for index, (left, right) in enumerate(zip(streamed, text))
+                    if left != right
+                ),
+                min(len(streamed), len(text)),
+            )
+            raise ValueError(
+                "streaming decoder text differs from collected text at "
+                f"character {mismatch}; streamed={len(streamed)} chars, "
+                f"collected={len(text)} chars"
+            ) from exc
+    return owners
 
 
 def sentence_boundaries(
@@ -68,7 +132,7 @@ def sentence_boundaries(
     eos_logits: list[float] | None = None,
     token_entropies: list[float] | None = None,
 ) -> list[SentenceBoundary]:
-    offsets = _token_offsets(tokenizer, text, token_ids)
+    char_owners = _token_char_owners(tokenizer, text, token_ids)
     eos_logits = eos_logits or []
     token_entropies = token_entropies or []
     thinking_close = text.casefold().find("</think>")
@@ -84,8 +148,7 @@ def sentence_boundaries(
     result: list[SentenceBoundary] = []
     for span in split_sentence_spans(text):
         overlapping = [
-            index for index, (left, right) in enumerate(offsets)
-            if right > span.start and left < span.end
+            owner for owner in char_owners[span.start : span.end] if owner >= 0
         ]
         if not overlapping:
             continue
@@ -398,7 +461,9 @@ class SentenceSteeringController:
         before = self.generated_text
         self.generated_ids.append(int(token_id))
         self.generated_text = self.tokenizer.decode(
-            self.generated_ids, skip_special_tokens=False
+            self.generated_ids,
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
         )
         if "</think>" in self.generated_text.casefold():
             self._inside_reasoning = False

@@ -55,7 +55,9 @@ def prepare_tasks(config: dict, paths: dict[str, Path]) -> list[dict]:
 def worker(args: argparse.Namespace, config: dict, paths: dict[str, Path]) -> None:
     from helix_role_experiment.config import read_jsonl
 
-    rows = read_jsonl(paths["tables"] / "readiness_tasks.jsonl")
+    all_rows = read_jsonl(paths["tables"] / "readiness_tasks.jsonl")
+    global_total = len(all_rows)
+    rows = all_rows
     rows = [row for index, row in enumerate(rows) if index % args.num_shards == args.shard_index]
     if args.limit is not None:
         rows = rows[: args.limit]
@@ -72,6 +74,13 @@ def worker(args: argparse.Namespace, config: dict, paths: dict[str, Path]) -> No
         trace_id = deterministic_id(config_hash(config), row["task_id"], "baseline")
         if not (trace_dir / f"{trace_id}.json").exists():
             pending.append((index, trace_id, row))
+    processed = len(rows) - len(pending)
+    alignment_failures = []
+    print(
+        f"[GPU shard {args.shard_index}] starting with {processed}/{len(rows)} "
+        f"worker prompts already complete; global total={global_total}",
+        flush=True,
+    )
     for start in range(0, len(pending), batch_size):
         chunk = pending[start : start + batch_size]
         generations = backend.collect_batch(
@@ -87,10 +96,30 @@ def worker(args: argparse.Namespace, config: dict, paths: dict[str, Path]) -> No
             stop_check_interval=int(config["collection"].get("stop_check_interval", 8)),
         )
         for (_, trace_id, row), generation in zip(chunk, generations, strict=True):
-            boundaries = sentence_boundaries(
-                backend.tokenizer, generation.text, generation.token_ids,
-                generation.eos_logits, generation.token_entropies,
-            )
+            try:
+                boundaries = sentence_boundaries(
+                    backend.tokenizer, generation.text, generation.token_ids,
+                    generation.eos_logits, generation.token_entropies,
+                )
+            except Exception as exc:
+                alignment_failures.append({
+                    "trace_id": trace_id,
+                    "task_id": row["task_id"],
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                atomic_json(paths["logs"] / f"alignment_failure_{trace_id}.json", {
+                    "trace_id": trace_id,
+                    "task_id": row["task_id"],
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "text": generation.text,
+                    "token_ids": generation.token_ids,
+                })
+                print(
+                    f"[GPU shard {args.shard_index}] alignment failed for "
+                    f"{row['task_id']}; continuing remaining prompts: {exc}",
+                    flush=True,
+                )
+                continue
             valid = [value for value in boundaries if value.activation_index < len(generation.token_ids)]
             arrays = {
                 f"layer_{layer}": generation.activations_by_layer[layer][
@@ -122,9 +151,25 @@ def worker(args: argparse.Namespace, config: dict, paths: dict[str, Path]) -> No
                 ),
                 "activation_file": str(npz_path),
             })
+            processed += 1
+            global_completed = len(list(trace_dir.glob("*.json")))
+            print(
+                f"[GPU shard {args.shard_index}] processed {processed}/{len(rows)} "
+                f"worker prompts; global {global_completed}/{global_total}; "
+                f"task={row['task_id']}",
+                flush=True,
+            )
     atomic_json(paths["logs"] / f"07a_worker_{args.shard_index}.json", {
-        "shard_index": args.shard_index, "assigned": len(rows), "completed": len(rows)
+        "shard_index": args.shard_index,
+        "assigned": len(rows),
+        "completed": processed,
+        "alignment_failures": alignment_failures,
     })
+    if alignment_failures:
+        raise RuntimeError(
+            f"{len(alignment_failures)} prompts failed alignment after all "
+            "other prompts on this GPU were processed; rerun to retry them"
+        )
 
 
 def readiness_prompt_from_row(row: dict) -> str:
