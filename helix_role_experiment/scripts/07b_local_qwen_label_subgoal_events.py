@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -39,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-model-len", type=int, default=16384)
     parser.add_argument("--max-output-tokens", type=int, default=4096)
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.90)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument(
         "--limit",
@@ -66,6 +67,22 @@ def selected_requests(
         if index % shard_count == shard_index
     }
     return [row for row in requests if str(row["trace_id"]) in selected]
+
+
+def configure_worker_environment(shard_index: int) -> None:
+    """Isolate caches and keep vLLM inside the already isolated GPU process."""
+    temporary = Path("/tmp")
+    os.environ["TRITON_CACHE_DIR"] = str(
+        temporary / f"readiness_triton_cache_gpu{shard_index}"
+    )
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(
+        temporary / f"readiness_inductor_cache_gpu{shard_index}"
+    )
+    # The outer script already creates one OS process per GPU. An additional
+    # vLLM engine-core process obscures its actual startup exception on Kaggle
+    # and is unnecessary for this offline workload.
+    os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+    os.environ["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
 
 
 def grouped_by_trace(
@@ -212,7 +229,11 @@ def run_worker(args: argparse.Namespace, config: dict[str, Any], paths: dict[str
     if not args.plan:
         raise ValueError("worker requires --plan")
 
-    from vllm import LLM
+    configure_worker_environment(args.shard_index)
+
+    import torch
+    import vllm
+    from vllm import EngineArgs, LLM
 
     plan = [
         json.loads(line)
@@ -236,22 +257,31 @@ def run_worker(args: argparse.Namespace, config: dict[str, Any], paths: dict[str
     model_id = args.model or config["model"]["id"]
     print(
         f"[replica {args.shard_index}] loading {model_id}; "
-        f"{len(assigned)} chunks assigned",
+        f"{len(assigned)} chunks assigned; vLLM={vllm.__version__}; "
+        f"torch={torch.__version__}; GPU={torch.cuda.get_device_name(0)}; "
+        f"visible={os.environ.get('CUDA_VISIBLE_DEVICES')}",
         flush=True,
     )
-    llm = LLM(
+    engine_kwargs = dict(
         model=model_id,
         tokenizer=model_id,
         dtype="float16",
         quantization="bitsandbytes",
-        load_format="bitsandbytes",
         tensor_parallel_size=1,
         max_model_len=args.max_model_len,
+        max_num_seqs=args.batch_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
         enable_prefix_caching=True,
+        enforce_eager=True,
         trust_remote_code=False,
         seed=int(config["study"].get("seed", 0)),
     )
+    # Qwen3.5 includes a vision encoder that this text-only labeler never uses.
+    # Current vLLM can omit it, freeing memory for the T4 KV cache. Retain
+    # compatibility with a nightly build that predates the Python argument.
+    if "language_model_only" in inspect.signature(EngineArgs).parameters:
+        engine_kwargs["language_model_only"] = True
+    llm = LLM(**engine_kwargs)
     tokenizer = llm.get_tokenizer()
     params = sampling_params(
         args.max_output_tokens,

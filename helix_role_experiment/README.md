@@ -122,6 +122,12 @@ caching reuses the long immutable trajectory prefix across that trajectory's
 remaining chunks. Re-running the command is the resume operation. Use
 `--limit 2` for an initial smoke test; omit it for the real run.
 
+Each GPU worker follows the proven router-process layout: `CUDA_VISIBLE_DEVICES`
+is set before Python starts, Triton and TorchInductor caches are isolated per
+GPU, nested vLLM V1 engine multiprocessing is disabled, and eager execution is
+used. Startup prints the vLLM, Torch, physical GPU, and visibility details so a
+Kaggle engine failure retains its useful root cause.
+
 To restore a downloaded checkpoint on a later Kaggle session, upload the tar
 archive as a private Kaggle Dataset, attach that dataset to the notebook, and
 extract its read-only input into writable working storage. Inspecting the first

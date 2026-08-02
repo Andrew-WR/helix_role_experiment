@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import unittest
 from pathlib import Path
 
@@ -34,6 +35,12 @@ class LocalQwenLabelingTests(unittest.TestCase):
         prompt = LABELER.build_prompt(FakeTokenizer(), request, "bad IDs")
         self.assertIn("False|", prompt)
         self.assertIn("bad IDs", prompt)
+
+    def test_worker_environment_disables_nested_engine_process(self):
+        LABELER.configure_worker_environment(1)
+        self.assertEqual(os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"], "0")
+        self.assertTrue(os.environ["TRITON_CACHE_DIR"].endswith("gpu1"))
+        self.assertTrue(os.environ["TORCHINDUCTOR_CACHE_DIR"].endswith("gpu1"))
 
 
 if __name__ == "__main__":
