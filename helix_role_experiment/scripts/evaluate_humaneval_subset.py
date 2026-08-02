@@ -101,6 +101,39 @@ def atomic_jsonl(destination: Path, rows: list[dict[str, Any]]) -> None:
     temporary.replace(destination)
 
 
+def rebuild_sample_files(paths: dict[str, Path]) -> dict[str, int]:
+    """Derive evaluator inputs from atomic trace checkpoints without loading Qwen."""
+    grouped: dict[str, list[dict[str, str]]] = {
+        condition: [] for condition in DEFAULT_CONDITIONS
+    }
+    for source in sorted((paths["traces"] / "readiness_baseline").glob("*.json")):
+        row = json.loads(source.read_text(encoding="utf-8"))
+        if row.get("split") == "test" and row.get("domain") == "code":
+            grouped["baseline"].append({
+                "task_id": str(row["task_id"]),
+                "completion": str(row.get("humaneval_completion") or ""),
+            })
+    for source in sorted((paths["traces"] / "readiness_steering").glob("*.json")):
+        row = json.loads(source.read_text(encoding="utf-8"))
+        condition = str(row.get("condition"))
+        if row.get("domain") == "code" and condition in grouped:
+            grouped[condition].append({
+                "task_id": str(row["task_id"]),
+                "completion": str(row.get("humaneval_completion") or ""),
+            })
+    counts = {}
+    for condition, rows in grouped.items():
+        rows.sort(key=lambda row: row["task_id"])
+        destination = paths["tables"] / f"humaneval_{condition}.jsonl"
+        if rows:
+            atomic_jsonl(destination, rows)
+        else:
+            destination.unlink(missing_ok=True)
+            Path(str(destination) + "_results.jsonl").unlink(missing_ok=True)
+        counts[condition] = len(rows)
+    return counts
+
+
 def evaluate_file(
     source: Path,
     tasks: dict[str, dict[str, Any]],
@@ -142,6 +175,8 @@ def main() -> None:
         if row["domain"] == "code"
     }
     conditions = tuple(args.condition or DEFAULT_CONDITIONS)
+    rebuilt = rebuild_sample_files(paths)
+    print(f"Rebuilt HumanEval inputs from saved traces: {rebuilt}", flush=True)
     print(
         "SECURITY: this executes model-generated Python. Run only in an "
         "isolated Kaggle session with Internet disabled and no secrets attached.",

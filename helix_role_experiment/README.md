@@ -187,6 +187,10 @@ python scripts/07e_finalize_readiness_results.py \
 The evaluator executes model-generated Python in timed disposable child
 processes. This is not a security boundary: run it only in an isolated Kaggle
 session with Internet disabled and no secrets attached.
+Before evaluation it reconstructs every `humaneval_<condition>.jsonl` input
+directly from the atomically saved baseline and steering traces, so it also
+works when 07d was interrupted before its final export step. It does not load
+the language model or regenerate any output.
 
 The primary gate passes only if the same gated method generalizes across math
 and code and achieves either at least 10% fewer output tokens with no more than
