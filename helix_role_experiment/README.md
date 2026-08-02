@@ -101,6 +101,12 @@ two. Stage 07a stores activations only at locally parsed sentence boundaries.
 The LaTeX-aware scanner protects decimals, abbreviations, inline/fenced code,
 math delimiters, and environments.
 
+Stage 07d prints saved/total progress for each GPU shard and for the complete
+test workload after every generated result. Interrupting the parent once asks
+both workers to terminate; every completed result is already an atomic JSON
+checkpoint, and rerunning the same command skips it. Only a generation still
+in flight at interruption is repeated.
+
 Stage 07b obtains `OPENAI_API_KEY` from the environment, or from the Kaggle
 secret of the same name, and never writes the key. It sends concurrent,
 immediate Responses API calls with strict Structured Outputs. Valid results
