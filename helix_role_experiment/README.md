@@ -80,6 +80,21 @@ python scripts/07c_fit_survival_probes.py --config configs/qwen_9b_readiness_kag
 python scripts/07d_run_readiness_steering.py --config configs/qwen_9b_readiness_kaggle.json
 ```
 
+For an explicitly exploratory fit after stopping labeling early, stage 07c can
+rebuild the annotation table from every valid whole/chunk result and skip
+unfinished trajectories:
+
+```bash
+python scripts/07c_fit_survival_probes.py \
+  --config configs/qwen_9b_readiness_kaggle.json \
+  --allow-partial-labels
+```
+
+This requires at least one labeled train and validation trajectory, records
+domain/split coverage in `tables/readiness_label_coverage.json`, and marks the
+probe result as a partial exploratory fit. It does not reinterpret missing
+labels as negative events.
+
 Stages 07a and 07d launch two child processes with `CUDA_VISIBLE_DEVICES=0`
 and `1`; each process loads one 4-bit Qwen3.5-9B replica and decodes batches of
 two. Stage 07a stores activations only at locally parsed sentence boundaries.

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 
 import numpy as np
 
 from _common import write_csv
-from helix_role_experiment.config import ensure_output_dirs, load_config, read_jsonl
+from helix_role_experiment.config import atomic_json, ensure_output_dirs, load_config, read_jsonl
 from helix_role_experiment.readiness import (
     build_survival_rows, concordance_index, fit_exponential_probe,
 )
@@ -16,7 +17,51 @@ from helix_role_experiment.readiness import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fit and select sentence-level time-to-next-subgoal probes")
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--allow-partial-labels",
+        action="store_true",
+        help=(
+            "Rebuild the annotation table from all valid cached results and fit "
+            "only labeled trajectories. Intended for exploratory pilot runs."
+        ),
+    )
     return parser.parse_args()
+
+
+def rebuild_partial_annotations(config: dict, paths: dict[str, Path]) -> None:
+    source = Path(__file__).resolve().parent / "07b_label_subgoal_events.py"
+    spec = importlib.util.spec_from_file_location("label_subgoal_events_07b_for_07c", source)
+    labeler = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(labeler)
+    labeler.validate_cached(config, paths, allow_missing=True)
+
+
+def coverage_report(
+    traces: list[dict], annotation_ids: set[str]
+) -> dict:
+    counts: dict[str, dict[str, int]] = {}
+    labeled = []
+    missing = []
+    for trace in traces:
+        trace_id = str(trace["trace_id"])
+        if trace_id not in annotation_ids:
+            missing.append(trace_id)
+            continue
+        labeled.append(trace_id)
+        domain = str(trace["domain"])
+        split = str(trace["split"])
+        counts.setdefault(domain, {}).setdefault(split, 0)
+        counts[domain][split] += 1
+    return {
+        "total_trajectories": len(traces),
+        "labeled_trajectories": len(labeled),
+        "missing_trajectories": len(missing),
+        "trajectory_counts_by_domain_and_split": counts,
+        "labeled_trace_ids": labeled,
+        "missing_trace_ids": missing,
+        "exploratory_partial_fit": bool(missing),
+    }
 
 
 def finite_nuisance(rows: list[dict]) -> np.ndarray:
@@ -46,11 +91,47 @@ def main() -> None:
     args = parse_args()
     config = load_config(args.config)
     paths = ensure_output_dirs(config)
+    if args.allow_partial_labels:
+        rebuild_partial_annotations(config, paths)
     annotations = {row["trace_id"]: row["annotations"] for row in read_jsonl(paths["tables"] / "sentence_annotations.jsonl")}
     trace_files = sorted((paths["traces"] / "readiness_baseline").glob("*.json"))
     if not trace_files:
         raise RuntimeError("run 07a collection first")
-    layers = json.loads(trace_files[0].read_text(encoding="utf-8"))["layers"]
+    traces = [json.loads(source.read_text(encoding="utf-8")) for source in trace_files]
+    coverage = coverage_report(traces, set(annotations))
+    atomic_json(paths["tables"] / "readiness_label_coverage.json", coverage)
+    if coverage["missing_trajectories"] and not args.allow_partial_labels:
+        first = coverage["missing_trace_ids"][0]
+        raise RuntimeError(
+            f"missing annotations for {first}; finish 07b or rerun with "
+            "--allow-partial-labels for an exploratory partial fit"
+        )
+    labeled_traces = [trace for trace in traces if trace["trace_id"] in annotations]
+    if not labeled_traces:
+        raise RuntimeError("no fully labeled trajectories are available")
+    split_counts = {
+        split: sum(trace["split"] == split for trace in labeled_traces)
+        for split in ("train", "val", "test")
+    }
+    if split_counts["train"] == 0 or split_counts["val"] == 0:
+        raise RuntimeError(
+            "partial labels must include at least one train and one validation "
+            f"trajectory; observed {split_counts}"
+        )
+    domains = sorted({str(trace["domain"]) for trace in labeled_traces})
+    if len(domains) < 2:
+        print(
+            f"WARNING: partial labels cover only {domains}; cross-domain "
+            "generalization cannot be assessed.",
+            flush=True,
+        )
+    print(
+        f"Using {len(labeled_traces)}/{len(traces)} labeled trajectories; "
+        f"split counts={split_counts}; domains={domains}. Coverage report: "
+        f"{paths['tables'] / 'readiness_label_coverage.json'}",
+        flush=True,
+    )
+    layers = labeled_traces[0]["layers"]
     layer_results = []
     layer_payload = {}
     ridge = float(config["probe"].get("ridge", 0.001))
@@ -58,10 +139,7 @@ def main() -> None:
         rows = []
         vectors = []
         adjacent_norms = []
-        for source in trace_files:
-            trace = json.loads(source.read_text(encoding="utf-8"))
-            if trace["trace_id"] not in annotations:
-                raise RuntimeError(f"missing annotations for {trace['trace_id']}")
+        for trace in labeled_traces:
             local_rows = build_survival_rows(trace, annotations[trace["trace_id"]], int(layer))
             stored = np.load(trace["activation_file"])[f"layer_{layer}"].astype(np.float32)
             sentence_index = {value["sentence_id"]: index for index, value in enumerate(trace["sentences"])}
@@ -108,6 +186,9 @@ def main() -> None:
         "layer": layer, "test_rows": len(test_x), "test_cindex": test_cindex,
         "threshold": final_probe.threshold, "native_step_norm": final_probe.native_step_norm,
         "passes_nuisance_diagnostic": chosen["increment_over_nuisance"] > 0,
+        "labeled_trajectories": len(labeled_traces),
+        "total_trajectories": len(traces),
+        "exploratory_partial_fit": coverage["exploratory_partial_fit"],
     }])
     print(f"Selected layer {layer}; held-out c-index={test_cindex:.3f}; probe={model_path}")
 
