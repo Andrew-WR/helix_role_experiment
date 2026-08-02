@@ -184,6 +184,12 @@ python scripts/07e_finalize_readiness_results.py \
   --config configs/qwen_9b_readiness_kaggle.json
 ```
 
+Stage 07e prints per-condition math, code, and overall accuracy/token summaries
+plus every within-model gate component. It distinguishes a gated-method
+within-model failure from a result that passed locally but still needs
+second-model replication. Always-on and random directions remain diagnostic
+controls and cannot themselves qualify as the commercial candidate.
+
 The evaluator executes model-generated Python in timed disposable child
 processes. This is not a security boundary: run it only in an isolated Kaggle
 session with Internet disabled and no secrets attached.

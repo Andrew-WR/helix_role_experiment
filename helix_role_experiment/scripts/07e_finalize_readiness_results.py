@@ -28,6 +28,61 @@ def load_code_scores(paths: dict[str, Path], condition: str) -> dict[str, bool]:
     return {str(row["task_id"]): bool(row["passed"]) for row in read_jsonl(source)}
 
 
+def metric(value: object, percent: bool = False) -> str:
+    if value is None:
+        return "NA"
+    number = float(value)
+    if not np.isfinite(number):
+        return "NA"
+    return f"{number * 100:.1f}%" if percent else f"{number:.1f}"
+
+
+def print_diagnostics(summaries: list[dict], gate_rows: list[dict]) -> None:
+    print("\nCondition results", flush=True)
+    print("condition  domain   scored/tasks  accuracy  mean_tokens", flush=True)
+    for row in summaries:
+        print(
+            f"{row['condition']:<10} {row['domain']:<8} "
+            f"{row['scored_tasks']:>3}/{row['tasks']:<3}       "
+            f"{metric(row['accuracy'], percent=True):>8}  "
+            f"{metric(row['mean_output_tokens']):>11}",
+            flush=True,
+        )
+    print("\nWithin-model gates", flush=True)
+    for row in gate_rows:
+        role = "candidate" if row["candidate_method"] else "control"
+        print(
+            f"{row['condition']}: role={role}; "
+            f"token_saving={metric(row['token_saving_fraction'], percent=True)}; "
+            f"accuracy_gain={metric(row['accuracy_gain_fraction'], percent=True)}; "
+            f"efficiency_gate={row['efficiency_gate']}; "
+            f"accuracy_gate={row['accuracy_gate']}; "
+            f"paired_tasks={row['paired_task_set_complete']}; "
+            f"cross_domain_noninferiority={row['cross_domain_noninferiority']}; "
+            f"within_model_success={row['within_model_success']}",
+            flush=True,
+        )
+
+
+def commercial_status(gate_rows: list[dict]) -> str:
+    candidate = next(
+        (row for row in gate_rows if row.get("candidate_method")), None
+    )
+    if candidate is None:
+        return "Commercial success gate: not evaluated (gated candidate is missing)"
+    if not candidate["within_model_success"]:
+        return (
+            "Commercial success gate: FAIL — gated did not pass the "
+            "within-model efficiency/accuracy and cross-domain requirements"
+        )
+    if not candidate["cross_model_replication"]:
+        return (
+            "Commercial success gate: NOT YET — gated passed within-model, "
+            "but a second-model replication is required"
+        )
+    return "Commercial success gate: PASS gated"
+
+
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
@@ -78,7 +133,24 @@ def main() -> None:
     for row in summaries:
         if row["domain"] != "overall" or row["condition"] == "baseline":
             continue
-        complete = row["scored_tasks"] == row["tasks"] and baseline["scored_tasks"] == baseline["tasks"]
+        paired_task_set = all(
+            {
+                value["task_id"] for value in observations
+                if value["condition"] == row["condition"]
+                and value["domain"] == domain
+            }
+            == {
+                value["task_id"] for value in observations
+                if value["condition"] == "baseline"
+                and value["domain"] == domain
+            }
+            for domain in ("math", "code")
+        )
+        complete = (
+            paired_task_set
+            and row["scored_tasks"] == row["tasks"]
+            and baseline["scored_tasks"] == baseline["tasks"]
+        )
         token_saving = 1.0 - row["mean_output_tokens"] / baseline["mean_output_tokens"]
         accuracy_gain = (row["accuracy"] - baseline["accuracy"]) if complete else None
         efficient = complete and token_saving >= 0.10 and accuracy_gain >= -0.01
@@ -94,7 +166,9 @@ def main() -> None:
             "condition": row["condition"], "token_saving_fraction": token_saving,
             "accuracy_gain_fraction": accuracy_gain, "efficiency_gate": efficient,
             "accuracy_gate": accurate, "cross_domain_noninferiority": domains_pass,
+            "paired_task_set_complete": paired_task_set,
             "within_model_success": within_model,
+            "candidate_method": row["condition"] == "gated",
             "cross_model_replication": False,
             "commercial_success": False,
         })
@@ -108,13 +182,15 @@ def main() -> None:
             for other in replication_rows
         )
         row["commercial_success"] = bool(
-            row["within_model_success"] and row["cross_model_replication"]
+            row["candidate_method"]
+            and row["within_model_success"]
+            and row["cross_model_replication"]
         )
     write_csv(paths["tables"] / "readiness_condition_summary.csv", summaries)
     write_csv(paths["tables"] / "readiness_success_gates.csv", gate_rows)
     atomic_json(paths["tables"] / "readiness_success_gates.json", gate_rows)
-    passed = [row["condition"] for row in gate_rows if row["commercial_success"]]
-    print(f"Commercial success gate: {'PASS ' + ', '.join(passed) if passed else 'not passed (a second-model replication is required)'}")
+    print_diagnostics(summaries, gate_rows)
+    print("\n" + commercial_status(gate_rows), flush=True)
 
 
 if __name__ == "__main__":
