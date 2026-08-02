@@ -100,6 +100,44 @@ again after merging, with up to three corrective retries. A conservative
 pre-run estimate is checked against the configured USD 5.60 hard guard, and
 actual token usage/cost is written after the run.
 
+If API credits are unavailable, the separate local labeler resumes the exact
+same cache with one 4-bit vLLM Qwen3.5-9B replica on each T4:
+
+```bash
+pip install -q uv 'bitsandbytes>=0.49.2'
+uv pip install --system vllm --torch-backend=auto \
+  --extra-index-url https://wheels.vllm.ai/nightly
+pip install -e .
+
+python scripts/07b_local_qwen_label_subgoal_events.py \
+  --config configs/qwen_9b_readiness_kaggle.json \
+  --replicas 2 --batch-size 8
+```
+
+It never replaces a valid whole-trajectory result or valid Luna chunk. It
+plans only missing chunks, assigns every chunk from one trajectory to the same
+replica, disables Qwen thinking, and uses vLLM structured JSON generation.
+Each valid chunk is atomically checkpointed immediately. Automatic prefix
+caching reuses the long immutable trajectory prefix across that trajectory's
+remaining chunks. Re-running the command is the resume operation. Use
+`--limit 2` for an initial smoke test; omit it for the real run.
+
+To restore a downloaded checkpoint on a later Kaggle session, upload the tar
+archive as a private Kaggle Dataset, attach that dataset to the notebook, and
+extract its read-only input into writable working storage. Inspecting the first
+few members before extraction catches an accidentally nested directory:
+
+```bash
+tar -tf /kaggle/input/YOUR-DATASET-SLUG/qwen9b_readiness_checkpoint.tar.gz | head
+tar -xf /kaggle/input/YOUR-DATASET-SLUG/qwen9b_readiness_checkpoint.tar.gz \
+  -C /kaggle/working
+test -d /kaggle/working/qwen9b_readiness/traces/readiness_baseline
+```
+
+The restored directory must be exactly `/kaggle/working/qwen9b_readiness`, as
+specified by `output.root`. `/kaggle/input` is read-only, so running directly
+against the attached archive will not checkpoint progress.
+
 Generated code is never run during model collection or steering. Stage 07d
 exports one `humaneval_<condition>.jsonl` file per condition. Evaluate these
 later in a disposable, network-disabled container or VM using the official
