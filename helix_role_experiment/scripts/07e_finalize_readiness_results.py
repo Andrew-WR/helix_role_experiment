@@ -21,11 +21,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_code_scores(paths: dict[str, Path], condition: str) -> dict[str, bool]:
+def load_code_scores(paths: dict[str, Path], condition: str) -> dict[str, dict]:
     source = paths["tables"] / f"humaneval_{condition}.jsonl_results.jsonl"
     if not source.exists():
         return {}
-    return {str(row["task_id"]): bool(row["passed"]) for row in read_jsonl(source)}
+    return {
+        str(row["task_id"]): {
+            "strict": bool(row["passed"]),
+            "functional": bool(row.get("functional_passed", row["passed"])),
+            "format_valid": bool(row.get("format_valid", True)),
+        }
+        for row in read_jsonl(source)
+    }
 
 
 def metric(value: object, percent: bool = False) -> str:
@@ -39,12 +46,16 @@ def metric(value: object, percent: bool = False) -> str:
 
 def print_diagnostics(summaries: list[dict], gate_rows: list[dict]) -> None:
     print("\nCondition results", flush=True)
-    print("condition  domain   scored/tasks  accuracy  mean_tokens", flush=True)
+    print(
+        "condition  domain   scored/tasks  strict_acc  functional_acc  mean_tokens",
+        flush=True,
+    )
     for row in summaries:
         print(
             f"{row['condition']:<10} {row['domain']:<8} "
             f"{row['scored_tasks']:>3}/{row['tasks']:<3}       "
-            f"{metric(row['accuracy'], percent=True):>8}  "
+            f"{metric(row['accuracy'], percent=True):>10}  "
+            f"{metric(row['functional_accuracy'], percent=True):>14}  "
             f"{metric(row['mean_output_tokens']):>11}",
             flush=True,
         )
@@ -94,12 +105,14 @@ def main() -> None:
             observations.append({
                 "task_id": row["task_id"], "domain": row["domain"], "condition": "baseline",
                 "tokens": row["output_token_count"], "correct": row["math_correct"],
+                "functional_correct": row["math_correct"],
             })
     for source in sorted((paths["traces"] / "readiness_steering").glob("*.json")):
         row = json.loads(source.read_text(encoding="utf-8"))
         observations.append({
             "task_id": row["task_id"], "domain": row["domain"], "condition": row["condition"],
             "tokens": row["output_token_count"], "correct": row["math_correct"],
+            "functional_correct": row["math_correct"],
         })
     conditions = sorted({row["condition"] for row in observations})
     missing = []
@@ -108,7 +121,9 @@ def main() -> None:
         for row in observations:
             if row["condition"] == condition and row["domain"] == "code":
                 if row["task_id"] in scores:
-                    row["correct"] = scores[row["task_id"]]
+                    score = scores[row["task_id"]]
+                    row["correct"] = score["strict"]
+                    row["functional_correct"] = score["functional"]
                 else:
                     missing.append((condition, row["task_id"]))
     if missing and not args.allow_missing_code:
@@ -123,9 +138,17 @@ def main() -> None:
         for domain in ("math", "code", "overall"):
             selected = [row for row in observations if row["condition"] == condition and (domain == "overall" or row["domain"] == domain)]
             scored = [row for row in selected if row["correct"] is not None]
+            functional_scored = [
+                row for row in selected if row["functional_correct"] is not None
+            ]
             summaries.append({
                 "condition": condition, "domain": domain, "tasks": len(selected),
                 "scored_tasks": len(scored), "accuracy": float(np.mean([row["correct"] for row in scored])) if scored else None,
+                "functional_accuracy": (
+                    float(np.mean([
+                        row["functional_correct"] for row in functional_scored
+                    ])) if functional_scored else None
+                ),
                 "mean_output_tokens": float(np.mean([row["tokens"] for row in selected])) if selected else None,
             })
     baseline = next(row for row in summaries if row["condition"] == "baseline" and row["domain"] == "overall")

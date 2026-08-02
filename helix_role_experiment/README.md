@@ -197,6 +197,12 @@ Before evaluation it reconstructs every `humaneval_<condition>.jsonl` input
 directly from the atomically saved baseline and steering traces, so it also
 works when 07d was interrupted before its final export step. It does not load
 the language model or regenerate any output.
+It records both ordinary harness-level functional correctness and a strict
+completion-only result. The strict result additionally requires an indented
+continuation of the supplied HumanEval function and rejects repeated function
+definitions, generation markers, special tokens, and Markdown fences. Stage
+07e uses strict accuracy for gates and prints functional accuracy alongside it
+as a secondary diagnostic.
 
 The primary gate passes only if the same gated method generalizes across math
 and code and achieves either at least 10% fewer output tokens with no more than

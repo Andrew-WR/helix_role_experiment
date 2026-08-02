@@ -28,6 +28,18 @@ class HumanEvalSubsetEvaluatorTests(unittest.TestCase):
         self.assertIn("return a + b", program)
         self.assertTrue(program.endswith("check(add)"))
 
+    def test_strict_format_accepts_body_and_rejects_repeated_function(self):
+        valid, reason = EVALUATOR.completion_format(
+            "    return a + b\n", "add"
+        )
+        self.assertTrue(valid)
+        self.assertEqual(reason, "valid_completion_only_format")
+        valid, reason = EVALUATOR.completion_format(
+            "def add(a, b):\n    return a + b\n", "add"
+        )
+        self.assertFalse(valid)
+        self.assertEqual(reason, "not_an_indented_prompt_continuation")
+
     def test_rebuild_inputs_uses_saved_baseline_and_steering_traces(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

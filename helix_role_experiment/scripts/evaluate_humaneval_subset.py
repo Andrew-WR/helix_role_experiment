@@ -7,6 +7,7 @@ import json
 import multiprocessing as mp
 import os
 import queue
+import re
 import signal
 import tempfile
 from pathlib import Path
@@ -38,6 +39,23 @@ def build_program(task: dict[str, Any], completion: str) -> str:
         + "\n"
         + f"check({metadata['entry_point']})"
     )
+
+
+def completion_format(completion: str, entry_point: str) -> tuple[bool, str]:
+    """Enforce the completion-only contract used in the generation prompt."""
+    value = completion.lstrip("\r\n")
+    if not value.strip():
+        return False, "empty_completion"
+    if any(marker in value for marker in ("```", "<|", "FINAL_CODE:")):
+        return False, "generation_marker_or_fence"
+    if not value[0].isspace():
+        return False, "not_an_indented_prompt_continuation"
+    definition = re.compile(
+        rf"(?m)^\s*(?:async\s+)?def\s+{re.escape(entry_point)}\s*\("
+    )
+    if definition.search(value):
+        return False, "repeats_supplied_function"
+    return True, "valid_completion_only_format"
 
 
 def _execute(program: str, result: Any) -> None:
@@ -152,12 +170,27 @@ def evaluate_file(
             build_program(tasks[task_id], str(sample.get("completion", ""))),
             timeout,
         )
-        result = {**sample, **outcome, "completion_id": 0}
+        format_valid, format_reason = completion_format(
+            str(sample.get("completion", "")),
+            str(tasks[task_id]["metadata"]["entry_point"]),
+        )
+        functional_passed = bool(outcome["passed"])
+        strict_passed = bool(functional_passed and format_valid)
+        result = {
+            **sample,
+            **outcome,
+            "functional_passed": functional_passed,
+            "format_valid": format_valid,
+            "format_reason": format_reason,
+            "passed": strict_passed,
+            "completion_id": 0,
+        }
         results.append(result)
-        passed += int(outcome["passed"])
+        passed += int(strict_passed)
         print(
             f"[{source.stem} {index}/{len(samples)}] {task_id}: "
-            f"{outcome['result']}",
+            f"functional={functional_passed}; strict={strict_passed}; "
+            f"format={format_reason}; execution={outcome['result']}",
             flush=True,
         )
     destination = Path(str(source) + "_results.jsonl")
@@ -190,7 +223,7 @@ def main() -> None:
             )
         destination, passed, total = evaluate_file(source, tasks, args.timeout)
         print(
-            f"{condition}: {passed}/{total} passed; wrote {destination}",
+            f"{condition}: {passed}/{total} strict passes; wrote {destination}",
             flush=True,
         )
 
