@@ -59,9 +59,9 @@ def main() -> None:
     if missing and not args.allow_missing_code:
         examples = ", ".join(f"{condition}/{task}" for condition, task in missing[:4])
         raise RuntimeError(
-            "HumanEval remains deferred. In an isolated evaluator, run "
-            "`evaluate_functional_correctness humaneval_<condition>.jsonl` for each condition, "
-            f"copy the *_results.jsonl files back to tables, then rerun. Missing: {examples}"
+            "HumanEval remains deferred. In an isolated Kaggle session, run "
+            "`python scripts/evaluate_humaneval_subset.py --config <config>` "
+            f"and then rerun 07e. Missing: {examples}"
         )
     summaries = []
     for condition in conditions:

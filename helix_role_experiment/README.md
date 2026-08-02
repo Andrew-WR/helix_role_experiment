@@ -171,13 +171,22 @@ later in a disposable, network-disabled container or VM using the official
 [OpenAI HumanEval evaluator](https://github.com/openai/human-eval); its own
 README warns that model-generated code is untrusted:
 
+The upstream HumanEval package has legacy console-entry metadata that fails
+with current Kaggle packaging, and its evaluator requires all 164 benchmark
+problems rather than this experiment's held-out subset. Use the included
+subset evaluator instead. It needs no HumanEval package installation and
+writes the exact result filenames consumed by stage 07e:
+
 ```bash
-evaluate_functional_correctness /kaggle/working/qwen9b_readiness/tables/humaneval_baseline.jsonl
-evaluate_functional_correctness /kaggle/working/qwen9b_readiness/tables/humaneval_gated.jsonl
-evaluate_functional_correctness /kaggle/working/qwen9b_readiness/tables/humaneval_always.jsonl
-evaluate_functional_correctness /kaggle/working/qwen9b_readiness/tables/humaneval_random.jsonl
-python scripts/07e_finalize_readiness_results.py --config configs/qwen_9b_readiness_kaggle.json
+python scripts/evaluate_humaneval_subset.py \
+  --config configs/qwen_9b_readiness_kaggle.json
+python scripts/07e_finalize_readiness_results.py \
+  --config configs/qwen_9b_readiness_kaggle.json
 ```
+
+The evaluator executes model-generated Python in timed disposable child
+processes. This is not a security boundary: run it only in an isolated Kaggle
+session with Internet disabled and no secrets attached.
 
 The primary gate passes only if the same gated method generalizes across math
 and code and achieves either at least 10% fewer output tokens with no more than
