@@ -76,7 +76,7 @@
     "recent_sentences": 8,
     "memory_dropout": 0.2,
     "negative_ratio": 6.0,
-    "epochs": 5,
+    "epochs": 100,
     "train_batch_size": 4,
     "inference_batch_size": 32,
     "gradient_accumulation": 4,
@@ -85,7 +85,9 @@
     "warmup_ratio": 0.1,
     "trainable_top_layers": 4,
     "review_margin": 0.08,
-    "memory_min_confidence": 0.75
+    "minimum_event_threshold": 0.5,
+    "target_event_precision": 0.5,
+    "memory_min_confidence": 0.8
   },
   "probe": {
     "ridge": 0.001,

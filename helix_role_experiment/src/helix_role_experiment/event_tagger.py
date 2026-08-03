@@ -205,23 +205,64 @@ def binary_metrics(labels: np.ndarray, predictions: np.ndarray) -> dict[str, flo
 
 
 def select_event_threshold(
-    labels: np.ndarray, probabilities: np.ndarray
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    minimum_threshold: float = 0.05,
+    target_precision: float = 0.0,
 ) -> tuple[float, dict[str, float]]:
     truth = np.asarray(labels, dtype=np.int64)
     scores = np.asarray(probabilities, dtype=np.float64)
     if len(truth) != len(scores):
         raise ValueError("labels and probabilities differ in length")
+    if not 0 <= minimum_threshold <= 1:
+        raise ValueError("minimum_threshold must be in [0, 1]")
+    if not 0 <= target_precision <= 1:
+        raise ValueError("target_precision must be in [0, 1]")
     if not np.any(truth == 1):
-        return 0.5, binary_metrics(truth, scores >= 0.5)
-    candidates = sorted(set(np.linspace(0.05, 0.95, 37).tolist() + scores.tolist()))
-    best_threshold = 0.5
+        threshold = max(0.5, minimum_threshold)
+        return threshold, binary_metrics(truth, scores >= threshold)
+    candidates = sorted(set(
+        np.linspace(minimum_threshold, 1.0, 96).tolist()
+        + [float(score) for score in scores if score >= minimum_threshold]
+    ))
+    best_threshold = minimum_threshold
     best_metrics = binary_metrics(truth, scores >= best_threshold)
     for threshold in candidates:
         metrics = binary_metrics(truth, scores >= threshold)
-        key = (metrics["f1"], metrics["precision"], metrics["recall"], threshold)
+        if target_precision == 0:
+            key = (
+                1, metrics["f1"], metrics["precision"],
+                metrics["recall"], threshold,
+            )
+            best_key = (
+                1, best_metrics["f1"], best_metrics["precision"],
+                best_metrics["recall"], best_threshold,
+            )
+            if key > best_key:
+                best_threshold = float(threshold)
+                best_metrics = metrics
+            continue
+        qualifies = metrics["tp"] > 0 and metrics["precision"] >= target_precision
+        best_qualifies = (
+            best_metrics["tp"] > 0
+            and best_metrics["precision"] >= target_precision
+        )
+        # Once the requested precision is reached, recover as much recall as
+        # possible. If it cannot be reached, select the most precise usable
+        # threshold instead of flooding the pseudo-label set with positives.
+        key = (
+            int(qualifies),
+            metrics["recall"] if qualifies else metrics["precision"],
+            metrics["precision"] if qualifies else metrics["f1"],
+            metrics["f1"] if qualifies else metrics["recall"],
+            threshold,
+        )
         best_key = (
-            best_metrics["f1"], best_metrics["precision"],
-            best_metrics["recall"], best_threshold,
+            int(best_qualifies),
+            best_metrics["recall"] if best_qualifies else best_metrics["precision"],
+            best_metrics["precision"] if best_qualifies else best_metrics["f1"],
+            best_metrics["f1"] if best_qualifies else best_metrics["recall"],
+            best_threshold,
         )
         if key > best_key:
             best_threshold = float(threshold)

@@ -22,6 +22,9 @@ class ModernBertScriptTests(unittest.TestCase):
         self.assertEqual(value["model_id"], "answerdotai/ModernBERT-base")
         self.assertEqual(value["max_length"], 2048)
         self.assertEqual(value["recent_sentences"], 8)
+        self.assertEqual(value["epochs"], 100)
+        self.assertEqual(value["minimum_event_threshold"], 0.5)
+        self.assertEqual(value["target_event_precision"], 0.5)
 
     def test_training_selection_keeps_events_and_nearby_negatives(self):
         trace = {

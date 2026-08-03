@@ -102,7 +102,12 @@ the scarce positive class more learnable. A deterministic correction-language
 rule restores the subtype in the saved annotations. Only the top four encoder
 layers and classification head are trained, with inverse-frequency class
 weighting, trajectory-level train/validation/test splits, and validation-set
-threshold selection. Both T4s are used through data parallelism.
+threshold selection. Training runs for 100 epochs but retains only the best
+validation checkpoint. Event thresholds are never below `0.50`; selection
+targets at least 50% validation precision and then maximizes recall. If no
+threshold reaches that target, it falls back to the most precise usable
+threshold. The stricter recurrent-memory threshold is `0.80`. Both T4s are
+used through data parallelism.
 
 Install the ordinary model dependencies and inspect the weak-label seed set:
 

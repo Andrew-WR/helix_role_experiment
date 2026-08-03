@@ -63,7 +63,7 @@ def tagger_settings(config: dict[str, Any]) -> dict[str, Any]:
         "recent_sentences": 8,
         "memory_dropout": 0.20,
         "negative_ratio": 6.0,
-        "epochs": 5,
+        "epochs": 100,
         "train_batch_size": 4,
         "inference_batch_size": 32,
         "gradient_accumulation": 4,
@@ -72,7 +72,9 @@ def tagger_settings(config: dict[str, Any]) -> dict[str, Any]:
         "warmup_ratio": 0.10,
         "trainable_top_layers": 4,
         "review_margin": 0.08,
-        "memory_min_confidence": 0.75,
+        "minimum_event_threshold": 0.50,
+        "target_event_precision": 0.50,
+        "memory_min_confidence": 0.80,
         "seed": int(config["study"].get("seed", 0)),
     }
     defaults.update(config.get("event_tagger", {}))
@@ -509,7 +511,7 @@ def train(config: dict[str, Any], paths: dict[str, Path]) -> None:
     scaler = torch.cuda.amp.GradScaler(enabled=True)
     destination = model_directory(paths)
     destination.mkdir(parents=True, exist_ok=True)
-    best_key = (-1.0, -1.0)
+    best_key = (-1, -1.0, -1.0, -1.0)
     history = []
     global_step = 0
 
@@ -555,7 +557,10 @@ def train(config: dict[str, Any], paths: dict[str, Path]) -> None:
             int(settings["inference_batch_size"]),
         )
         teacher_threshold, teacher_metrics = select_event_threshold(
-            teacher_labels, teacher_probabilities
+            teacher_labels,
+            teacher_probabilities,
+            minimum_threshold=float(settings["minimum_event_threshold"]),
+            target_precision=float(settings["target_event_precision"]),
         )
         val_labels, val_probabilities = evaluate_rollout(
             wrapped, tokenizer, traces, annotations, "val", settings, device,
@@ -563,7 +568,16 @@ def train(config: dict[str, Any], paths: dict[str, Path]) -> None:
                 teacher_threshold, float(settings["memory_min_confidence"])
             ),
         )
-        threshold, metrics = select_event_threshold(val_labels, val_probabilities)
+        threshold, metrics = select_event_threshold(
+            val_labels,
+            val_probabilities,
+            minimum_threshold=float(settings["minimum_event_threshold"]),
+            target_precision=float(settings["target_event_precision"]),
+        )
+        precision_target_met = (
+            metrics["tp"] > 0
+            and metrics["precision"] >= float(settings["target_event_precision"])
+        )
         row = {
             "epoch": epoch + 1,
             "train_examples": len(examples),
@@ -571,11 +585,19 @@ def train(config: dict[str, Any], paths: dict[str, Path]) -> None:
             "threshold": threshold,
             "teacher_forced_threshold": teacher_threshold,
             "teacher_forced_val_f1": teacher_metrics["f1"],
+            "precision_target_met": precision_target_met,
+            "val_predicted_events": int(np.sum(val_probabilities >= threshold)),
+            "val_predicted_event_rate": float(np.mean(val_probabilities >= threshold)),
             **{f"val_{key}": value for key, value in metrics.items()},
         }
         history.append(row)
         print(json.dumps(row), flush=True)
-        key = (metrics["f1"], metrics["precision"])
+        key = (
+            int(precision_target_met),
+            metrics["recall"] if precision_target_met else metrics["precision"],
+            metrics["precision"] if precision_target_met else metrics["f1"],
+            metrics["f1"] if precision_target_met else metrics["recall"],
+        )
         if key > best_key:
             best_key = key
             model.save_pretrained(destination)
@@ -586,6 +608,8 @@ def train(config: dict[str, Any], paths: dict[str, Path]) -> None:
                     threshold, float(settings["memory_min_confidence"])
                 ),
                 "review_margin": float(settings["review_margin"]),
+                "target_event_precision": float(settings["target_event_precision"]),
+                "precision_target_met": precision_target_met,
                 "validation_metrics": metrics,
                 "epoch": epoch + 1,
             })

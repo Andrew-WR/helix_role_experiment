@@ -88,6 +88,16 @@ class EventTaggerTests(unittest.TestCase):
         self.assertLessEqual(threshold, 0.6)
         self.assertEqual(metrics["f1"], 1.0)
 
+    def test_threshold_respects_floor_and_precision_target(self):
+        labels = np.asarray([0, 0, 1, 1])
+        probabilities = np.asarray([0.55, 0.60, 0.65, 0.90])
+        threshold, metrics = select_event_threshold(
+            labels, probabilities, minimum_threshold=0.5, target_precision=1.0
+        )
+        self.assertGreaterEqual(threshold, 0.5)
+        self.assertEqual(metrics["precision"], 1.0)
+        self.assertEqual(metrics["recall"], 1.0)
+
     def test_annotations_preserve_event_and_final_schema(self):
         rows = annotations_from_event_probabilities(
             trace(), [0.1, 0.8, 0.9, None], threshold=0.5, review_margin=0.05
