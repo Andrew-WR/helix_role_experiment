@@ -70,6 +70,30 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual((rows[1]["event"], rows[1]["duration"]), (1, 7))
         self.assertEqual((rows[2]["event"], rows[2]["duration"]), (0, 18))
 
+    def test_productive_backtrack_can_be_configured_as_progress(self):
+        trace = {
+            "trace_id": "t", "task_id": "p", "domain": "math", "split": "train",
+            "output_token_count": 20,
+            "sentences": [
+                {"sentence_id": "S0", "is_reasoning": True, "token_start": 0,
+                 "token_end": 5, "activation_index": 0},
+                {"sentence_id": "S1", "is_reasoning": True, "token_start": 5,
+                 "token_end": 12, "activation_index": 5},
+            ],
+        }
+        annotations = [
+            {"primary_label": "neutral_support"},
+            {"primary_label": "productive_backtrack"},
+        ]
+        legacy = build_survival_rows(trace, annotations, 1)
+        progress = build_survival_rows(
+            trace, annotations, 1,
+            progress_event_labels=("forward_progress", "productive_backtrack"),
+        )
+        self.assertEqual(legacy[0]["event"], 0)
+        self.assertEqual(progress[0]["event"], 1)
+        self.assertEqual(progress[0]["next_event_label"], "productive_backtrack")
+
     def test_group_split_is_domain_stratified_and_has_no_leakage(self):
         rows = [
             {"task_id": f"{domain}-{index}", "domain": domain}

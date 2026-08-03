@@ -21,6 +21,11 @@ EVENT_LABELS = (
     "final_answer",
 )
 
+DEFAULT_PROGRESS_EVENT_LABELS = (
+    "forward_progress",
+    "productive_backtrack",
+)
+
 
 @dataclass(frozen=True)
 class SentenceBoundary:
@@ -300,10 +305,17 @@ def assign_group_splits(
 
 def build_survival_rows(
     trace: dict[str, Any], annotations: list[dict[str, Any]], layer: int,
+    progress_event_labels: Iterable[str] = ("forward_progress",),
 ) -> list[dict[str, Any]]:
     sentences = trace["sentences"]
     if len(sentences) != len(annotations):
         raise ValueError("sentence and annotation lengths differ")
+    progress_labels = frozenset(str(value) for value in progress_event_labels)
+    unknown = progress_labels - set(EVENT_LABELS)
+    if not progress_labels:
+        raise ValueError("at least one progress event label is required")
+    if unknown:
+        raise ValueError(f"unknown progress event labels: {sorted(unknown)}")
     reasoning = [index for index, value in enumerate(sentences) if value["is_reasoning"]]
     rows = []
     output_tokens = int(trace["output_token_count"])
@@ -311,7 +323,7 @@ def build_survival_rows(
         current = sentences[index]
         future = next((
             candidate for candidate in reasoning[position:]
-            if annotations[candidate]["primary_label"] == "forward_progress"
+            if annotations[candidate]["primary_label"] in progress_labels
         ), None)
         event = int(future is not None)
         endpoint = sentences[future]["token_end"] if future is not None else output_tokens
@@ -328,6 +340,9 @@ def build_survival_rows(
             "duration": duration, "event": event,
             "token_start": current["token_start"],
             "previous_sentence_tokens": previous_length,
+            "next_event_label": (
+                annotations[future]["primary_label"] if future is not None else None
+            ),
             "eos_logit": current.get("eos_logit"),
             "token_entropy": current.get("token_entropy"),
         })

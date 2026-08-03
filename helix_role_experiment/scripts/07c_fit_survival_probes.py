@@ -10,7 +10,8 @@ import numpy as np
 from _common import write_csv
 from helix_role_experiment.config import atomic_json, ensure_output_dirs, load_config, read_jsonl
 from helix_role_experiment.readiness import (
-    build_survival_rows, concordance_index, fit_exponential_probe,
+    DEFAULT_PROGRESS_EVENT_LABELS, EVENT_LABELS, build_survival_rows,
+    concordance_index, fit_exponential_probe,
 )
 
 
@@ -38,14 +39,14 @@ def rebuild_partial_annotations(config: dict, paths: dict[str, Path]) -> None:
 
 
 def coverage_report(
-    traces: list[dict], annotation_ids: set[str]
+    traces: list[dict], annotations: dict[str, list[dict]],
 ) -> dict:
     counts: dict[str, dict[str, int]] = {}
     labeled = []
     missing = []
     for trace in traces:
         trace_id = str(trace["trace_id"])
-        if trace_id not in annotation_ids:
+        if trace_id not in annotations:
             missing.append(trace_id)
             continue
         labeled.append(trace_id)
@@ -53,6 +54,21 @@ def coverage_report(
         split = str(trace["split"])
         counts.setdefault(domain, {}).setdefault(split, 0)
         counts[domain][split] += 1
+    label_counts = {label: 0 for label in EVENT_LABELS}
+    reasoning_needs_review = 0
+    traces_by_id = {str(trace["trace_id"]): trace for trace in traces}
+    for trace_id, rows in annotations.items():
+        sentence_rows = traces_by_id.get(trace_id, {}).get("sentences", [])
+        for index, row in enumerate(rows):
+            label = str(row["primary_label"])
+            label_counts[label] = label_counts.get(label, 0) + 1
+            is_reasoning = (
+                bool(sentence_rows[index].get("is_reasoning", False))
+                if index < len(sentence_rows) else True
+            )
+            reasoning_needs_review += int(
+                is_reasoning and bool(row.get("needs_review", False))
+            )
     return {
         "total_trajectories": len(traces),
         "labeled_trajectories": len(labeled),
@@ -61,6 +77,8 @@ def coverage_report(
         "labeled_trace_ids": labeled,
         "missing_trace_ids": missing,
         "exploratory_partial_fit": bool(missing),
+        "sentence_label_counts": label_counts,
+        "reasoning_sentences_needing_review": reasoning_needs_review,
     }
 
 
@@ -98,7 +116,7 @@ def main() -> None:
     if not trace_files:
         raise RuntimeError("run 07a collection first")
     traces = [json.loads(source.read_text(encoding="utf-8")) for source in trace_files]
-    coverage = coverage_report(traces, set(annotations))
+    coverage = coverage_report(traces, annotations)
     atomic_json(paths["tables"] / "readiness_label_coverage.json", coverage)
     if coverage["missing_trajectories"] and not args.allow_partial_labels:
         first = coverage["missing_trace_ids"][0]
@@ -132,6 +150,22 @@ def main() -> None:
         flush=True,
     )
     layers = labeled_traces[0]["layers"]
+    progress_event_labels = tuple(config["probe"].get(
+        "progress_event_labels", DEFAULT_PROGRESS_EVENT_LABELS
+    ))
+    unknown_progress_labels = set(progress_event_labels) - set(EVENT_LABELS)
+    if not progress_event_labels or unknown_progress_labels:
+        raise ValueError(
+            "probe.progress_event_labels must contain known labels; "
+            f"received {list(progress_event_labels)}"
+        )
+    print(
+        "Progress events used by the survival target: "
+        f"{list(progress_event_labels)}. Label counts: "
+        f"{coverage['sentence_label_counts']}; reasoning sentences needing "
+        f"review: {coverage['reasoning_sentences_needing_review']}",
+        flush=True,
+    )
     layer_results = []
     layer_payload = {}
     ridge = float(config["probe"].get("ridge", 0.001))
@@ -140,7 +174,10 @@ def main() -> None:
         vectors = []
         adjacent_norms = []
         for trace in labeled_traces:
-            local_rows = build_survival_rows(trace, annotations[trace["trace_id"]], int(layer))
+            local_rows = build_survival_rows(
+                trace, annotations[trace["trace_id"]], int(layer),
+                progress_event_labels=progress_event_labels,
+            )
             stored = np.load(trace["activation_file"])[f"layer_{layer}"].astype(np.float32)
             sentence_index = {value["sentence_id"]: index for index, value in enumerate(trace["sentences"])}
             local_vectors = np.asarray([stored[sentence_index[row["sentence_id"]]] for row in local_rows])
@@ -189,6 +226,10 @@ def main() -> None:
         "labeled_trajectories": len(labeled_traces),
         "total_trajectories": len(traces),
         "exploratory_partial_fit": coverage["exploratory_partial_fit"],
+        "progress_event_labels": "|".join(progress_event_labels),
+        "reasoning_sentences_needing_review": (
+            coverage["reasoning_sentences_needing_review"]
+        ),
     }])
     print(f"Selected layer {layer}; held-out c-index={test_cindex:.3f}; probe={model_path}")
 

@@ -57,9 +57,23 @@
       "output": 1.2
     }
   },
+  "gemini_labeling": {
+    "model": "gemini-3-flash-preview",
+    "concurrency": 4,
+    "validation_attempts": 3,
+    "audit_passes": 1,
+    "max_output_tokens": 4096,
+    "thinking_level": "minimal",
+    "max_cost_usd": 3.0,
+    "prices_per_million": {
+      "input": 0.5,
+      "output": 3.0
+    }
+  },
   "probe": {
     "ridge": 0.001,
-    "trigger_quantile": 0.67
+    "trigger_quantile": 0.67,
+    "progress_event_labels": ["forward_progress", "productive_backtrack"]
   },
   "intervention": {
     "alpha": 0.5,

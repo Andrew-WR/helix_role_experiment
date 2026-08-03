@@ -121,6 +121,40 @@ again after merging, with up to three corrective retries. A conservative
 pre-run estimate is checked against the configured USD 5.60 hard guard, and
 actual token usage/cost is written after the run.
 
+For the remaining trajectories, the compact Gemini labeler is the preferred
+path. It uses the standard real-time API rather than the asynchronous Batch
+API. Install the Google SDK, store the key in a Kaggle secret named
+`GEMINI_API_KEY`, and first inspect the resumable plan:
+
+```bash
+pip install -q -U google-genai
+
+python scripts/07b_gemini_label_subgoal_events.py \
+  --config configs/qwen_9b_readiness_kaggle.json prepare
+
+python scripts/07b_gemini_label_subgoal_events.py \
+  --config configs/qwen_9b_readiness_kaggle.json run \
+  --concurrency 4
+```
+
+The script preserves every valid whole result and every trajectory that can
+already be assembled from valid Luna/Qwen chunks. It sends each still-missing
+complete trajectory once, returns one compact character per immutable
+sentence, and performs one complete audit pass by default. Audit disagreements
+are retained as `needs_review`; the audited labels are expanded into the
+legacy annotation schema so stage 07c needs no data migration. Each completed
+trajectory is written atomically. `Ctrl-C` is safe, and rerunning the same
+command resumes. Use `--limit 2` for a paid/free-tier smoke test.
+
+The compact codes preserve all original event types: forward progress,
+productive backtrack, neutral support, redundant, incorrect, and final answer.
+The survival target treats both forward progress and productive backtracking
+as progress events because a valid correction moves the trajectory back onto
+a solution path. The other reasoning labels remain non-event/background
+states. Final answers are outside the reasoning region, and stage 07d stops
+intervening after `</think>`. The exact event set is recorded and can be frozen
+with `probe.progress_event_labels` in the config.
+
 If API credits are unavailable, the separate local labeler resumes the exact
 same cache with one 4-bit vLLM Qwen3.5-9B replica on each T4:
 

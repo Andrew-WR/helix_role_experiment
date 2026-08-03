@@ -22,7 +22,7 @@ model = [
   "sentence-transformers>=2.7"
 ]
 test = ["pytest>=8"]
-labeling = ["openai>=1.99"]
+labeling = ["openai>=1.99", "google-genai>=1.30"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
