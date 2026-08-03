@@ -23,6 +23,14 @@ class CharacterTokenizer:
         return [1] + list(values) + [2]
 
 
+class TokenizersBackendLike:
+    """Transformers 5-style backend without build_inputs_with_special_tokens."""
+
+    def encode(self, text, add_special_tokens=False):
+        values = [ord(value) for value in text]
+        return [101] + values + [102] if add_special_tokens else values
+
+
 def trace():
     return {
         "trace_id": "abc", "task_id": "p", "domain": "math", "split": "train",
@@ -61,6 +69,16 @@ class EventTaggerTests(unittest.TestCase):
         self.assertEqual(len(ids), len(mask))
         self.assertIn("TARGET SENTENCE", decoded)
         self.assertIn("wrong; x=2", decoded)
+
+    def test_context_supports_transformers_five_tokenizer_backend(self):
+        ids, mask = encode_event_context(
+            TokenizersBackendLike(), trace(), 2,
+            [("forward_progress", "Thus x=3.")],
+            recent_sentences=2, max_length=256,
+        )
+        self.assertEqual(ids[0], 101)
+        self.assertEqual(ids[-1], 102)
+        self.assertEqual(len(ids), len(mask))
 
     def test_threshold_optimizes_event_f1(self):
         labels = np.asarray([0, 0, 1, 1])

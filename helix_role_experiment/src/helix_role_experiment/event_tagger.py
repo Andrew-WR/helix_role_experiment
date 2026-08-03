@@ -80,6 +80,28 @@ def _tail(values: list[int], limit: int) -> list[int]:
     return values if len(values) <= limit else values[-limit:]
 
 
+def _special_token_affixes(tokenizer: Any) -> tuple[list[int], list[int]]:
+    """Return the single-sequence prefix/suffix across tokenizer backends.
+
+    Transformers 5 can expose fast tokenizers as ``TokenizersBackend``. That
+    backend is callable and implements ``encode`` but no longer exposes the
+    older ``build_inputs_with_special_tokens`` helper. Deriving the template
+    from a probe keeps this compatible with both APIs without hard-coding CLS
+    and SEP IDs for ModernBERT.
+    """
+    probe = "codex special token template probe"
+    bare = list(tokenizer.encode(probe, add_special_tokens=False))
+    decorated = list(tokenizer.encode(probe, add_special_tokens=True))
+    if not bare:
+        raise ValueError("tokenizer produced no IDs for the special-token probe")
+    for start in range(len(decorated) - len(bare) + 1):
+        if decorated[start:start + len(bare)] == bare:
+            return decorated[:start], decorated[start + len(bare):]
+    raise ValueError(
+        "could not infer the tokenizer's single-sequence special-token template"
+    )
+
+
 def encode_event_context(
     tokenizer: Any,
     trace: dict[str, Any],
@@ -121,7 +143,8 @@ def encode_event_context(
         name: list(tokenizer.encode(text, add_special_tokens=False))
         for name, text in sections.items()
     }
-    special = int(tokenizer.num_special_tokens_to_add(pair=False))
+    special_prefix, special_suffix = _special_token_affixes(tokenizer)
+    special = len(special_prefix) + len(special_suffix)
     separator = tokenizer.encode("\n\n", add_special_tokens=False)
     budget = max_length - special - len(separator) * 4
     if budget <= 0:
@@ -155,7 +178,7 @@ def encode_event_context(
         if combined:
             combined.extend(separator)
         combined.extend(selected[name])
-    input_ids = list(tokenizer.build_inputs_with_special_tokens(combined))
+    input_ids = special_prefix + combined + special_suffix
     if len(input_ids) > max_length:
         input_ids = input_ids[:max_length]
     return input_ids, [1] * len(input_ids)
