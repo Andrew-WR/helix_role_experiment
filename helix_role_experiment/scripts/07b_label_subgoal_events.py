@@ -434,6 +434,7 @@ def validate_cached(
             continue
         rows.append({
             "trace_id": trace["trace_id"],
+            "source": record.get("source", "unknown"),
             "annotations": record["annotations"],
         })
     write_jsonl(paths["tables"] / "sentence_annotations.jsonl", rows)

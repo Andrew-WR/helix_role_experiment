@@ -40,6 +40,7 @@ def rebuild_partial_annotations(config: dict, paths: dict[str, Path]) -> None:
 
 def coverage_report(
     traces: list[dict], annotations: dict[str, list[dict]],
+    label_sources: dict[str, str] | None = None,
 ) -> dict:
     counts: dict[str, dict[str, int]] = {}
     labeled = []
@@ -57,6 +58,10 @@ def coverage_report(
     label_counts = {label: 0 for label in EVENT_LABELS}
     reasoning_needs_review = 0
     traces_by_id = {str(trace["trace_id"]): trace for trace in traces}
+    source_counts: dict[str, int] = {}
+    for trace_id in annotations:
+        source = str((label_sources or {}).get(trace_id, "unknown"))
+        source_counts[source] = source_counts.get(source, 0) + 1
     for trace_id, rows in annotations.items():
         sentence_rows = traces_by_id.get(trace_id, {}).get("sentences", [])
         for index, row in enumerate(rows):
@@ -79,6 +84,11 @@ def coverage_report(
         "exploratory_partial_fit": bool(missing),
         "sentence_label_counts": label_counts,
         "reasoning_sentences_needing_review": reasoning_needs_review,
+        "trajectory_label_source_counts": source_counts,
+        "pseudo_label_evaluation_warning": any(
+            source == "modernbert_sequential_event_tagger"
+            for source in source_counts
+        ),
     }
 
 
@@ -111,12 +121,17 @@ def main() -> None:
     paths = ensure_output_dirs(config)
     if args.allow_partial_labels:
         rebuild_partial_annotations(config, paths)
-    annotations = {row["trace_id"]: row["annotations"] for row in read_jsonl(paths["tables"] / "sentence_annotations.jsonl")}
+    annotation_records = read_jsonl(paths["tables"] / "sentence_annotations.jsonl")
+    annotations = {row["trace_id"]: row["annotations"] for row in annotation_records}
+    label_sources = {
+        row["trace_id"]: str(row.get("source", "unknown"))
+        for row in annotation_records
+    }
     trace_files = sorted((paths["traces"] / "readiness_baseline").glob("*.json"))
     if not trace_files:
         raise RuntimeError("run 07a collection first")
     traces = [json.loads(source.read_text(encoding="utf-8")) for source in trace_files]
-    coverage = coverage_report(traces, annotations)
+    coverage = coverage_report(traces, annotations, label_sources)
     atomic_json(paths["tables"] / "readiness_label_coverage.json", coverage)
     if coverage["missing_trajectories"] and not args.allow_partial_labels:
         first = coverage["missing_trace_ids"][0]
@@ -163,7 +178,8 @@ def main() -> None:
         "Progress events used by the survival target: "
         f"{list(progress_event_labels)}. Label counts: "
         f"{coverage['sentence_label_counts']}; reasoning sentences needing "
-        f"review: {coverage['reasoning_sentences_needing_review']}",
+        f"review: {coverage['reasoning_sentences_needing_review']}; label sources: "
+        f"{coverage['trajectory_label_source_counts']}",
         flush=True,
     )
     layer_results = []
@@ -230,6 +246,10 @@ def main() -> None:
         "reasoning_sentences_needing_review": (
             coverage["reasoning_sentences_needing_review"]
         ),
+        "trajectory_label_source_counts": json.dumps(
+            coverage["trajectory_label_source_counts"], sort_keys=True
+        ),
+        "pseudo_label_evaluation_warning": coverage["pseudo_label_evaluation_warning"],
     }])
     print(f"Selected layer {layer}; held-out c-index={test_cindex:.3f}; probe={model_path}")
 

@@ -24,7 +24,10 @@ class PartialProbeFitTests(unittest.TestCase):
             "m1": [{"primary_label": "forward_progress", "needs_review": False}],
             "c1": [{"primary_label": "productive_backtrack", "needs_review": True}],
         }
-        report = FITTER.coverage_report(traces, annotations)
+        report = FITTER.coverage_report(
+            traces, annotations,
+            {"m1": "chunked", "c1": "modernbert_sequential_event_tagger"},
+        )
         self.assertEqual(report["labeled_trajectories"], 2)
         self.assertEqual(report["missing_trace_ids"], ["m2"])
         self.assertEqual(
@@ -35,6 +38,11 @@ class PartialProbeFitTests(unittest.TestCase):
         self.assertEqual(report["sentence_label_counts"]["forward_progress"], 1)
         self.assertEqual(report["sentence_label_counts"]["productive_backtrack"], 1)
         self.assertEqual(report["reasoning_sentences_needing_review"], 1)
+        self.assertEqual(
+            report["trajectory_label_source_counts"],
+            {"chunked": 1, "modernbert_sequential_event_tagger": 1},
+        )
+        self.assertTrue(report["pseudo_label_evaluation_warning"])
 
 
 if __name__ == "__main__":

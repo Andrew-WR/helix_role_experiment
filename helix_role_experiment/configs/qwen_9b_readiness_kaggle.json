@@ -70,6 +70,23 @@
       "output": 3.0
     }
   },
+  "event_tagger": {
+    "model_id": "answerdotai/ModernBERT-base",
+    "max_length": 2048,
+    "recent_sentences": 8,
+    "memory_dropout": 0.2,
+    "negative_ratio": 6.0,
+    "epochs": 5,
+    "train_batch_size": 4,
+    "inference_batch_size": 32,
+    "gradient_accumulation": 4,
+    "learning_rate": 0.00002,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.1,
+    "trainable_top_layers": 4,
+    "review_margin": 0.08,
+    "memory_min_confidence": 0.75
+  },
   "probe": {
     "ridge": 0.001,
     "trigger_quantile": 0.67,

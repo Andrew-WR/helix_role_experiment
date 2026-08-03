@@ -80,6 +80,70 @@ python scripts/07c_fit_survival_probes.py --config configs/qwen_9b_readiness_kag
 python scripts/07d_run_readiness_steering.py --config configs/qwen_9b_readiness_kaggle.json
 ```
 
+### Preferred remaining-label path: sequential ModernBERT
+
+The preferred replacement for hosted or generative-LLM labeling is the
+sequential `answerdotai/ModernBERT-base` event tagger. It trains on the valid
+trajectory labels already present, then fills only missing trajectories. It
+does not generate text and does not reread the complete reasoning trace for
+every sentence.
+
+For each target sentence the encoder receives five bounded sections: task,
+reference, previously accepted forward/backtrack events, the eight most recent
+sentences, and the target. The default input is 2,048 tokens even though
+ModernBERT supports up to 8,192; explicit per-section budgets preserve the
+target and important state while avoiding the large runtime penalty of always
+using the maximum window. Training drops 20% of gold event-memory entries so
+the classifier remains useful when an earlier event is missed at inference.
+
+The head is binary (`progress_event` versus `other`). Forward progress and
+productive backtracking share the same survival target and are pooled to make
+the scarce positive class more learnable. A deterministic correction-language
+rule restores the subtype in the saved annotations. Only the top four encoder
+layers and classification head are trained, with inverse-frequency class
+weighting, trajectory-level train/validation/test splits, and validation-set
+threshold selection. Both T4s are used through data parallelism.
+
+Install the ordinary model dependencies and inspect the weak-label seed set:
+
+```bash
+pip install -e '.[model]'
+
+python scripts/07b_modernbert_event_tagger.py \
+  --config configs/qwen_9b_readiness_kaggle.json prepare
+```
+
+This writes `tables/modernbert_seed_review.csv`, containing every existing
+progress event plus a matched sample of negatives. The existing 15 trajectories
+are weak supervision, not ground truth. For better accuracy, copy reviewed rows
+to `tables/modernbert_seed_overrides.csv` and fill `human_label` with
+`progress`, `backtrack`, or `other`; blank rows are ignored. Training records
+how many overrides were used and explicitly marks unreviewed held-out metrics
+as teacher agreement rather than truth.
+
+Train, smoke-test two missing trajectories, and then resume the remainder:
+
+```bash
+python scripts/07b_modernbert_event_tagger.py \
+  --config configs/qwen_9b_readiness_kaggle.json train
+
+python scripts/07b_modernbert_event_tagger.py \
+  --config configs/qwen_9b_readiness_kaggle.json apply --limit 2
+
+python scripts/07b_modernbert_event_tagger.py \
+  --config configs/qwen_9b_readiness_kaggle.json apply
+
+python scripts/07c_fit_survival_probes.py \
+  --config configs/qwen_9b_readiness_kaggle.json
+```
+
+Application is sequential within each trajectory but batches the current
+sentence from up to 32 trajectories, so event memory remains causal without
+sacrificing GPU throughput. Only events above a stricter memory-confidence
+threshold are added to later context. Completed trajectories are atomic and
+resumable. Every predicted event and every near-threshold sentence is exported
+to `tables/modernbert_prediction_review.jsonl`.
+
 For an explicitly exploratory fit after stopping labeling early, stage 07c can
 rebuild the annotation table from every valid whole/chunk result and skip
 unfinished trajectories:
@@ -121,9 +185,9 @@ again after merging, with up to three corrective retries. A conservative
 pre-run estimate is checked against the configured USD 5.60 hard guard, and
 actual token usage/cost is written after the run.
 
-For the remaining trajectories, the compact Gemini labeler is the preferred
-path. It uses the standard real-time API rather than the asynchronous Batch
-API. Install the Google SDK, store the key in a Kaggle secret named
+The compact Gemini labeler remains as a legacy hosted alternative when quota
+is available. It uses the standard real-time API rather than the asynchronous
+Batch API. Install the Google SDK, store the key in a Kaggle secret named
 `GEMINI_API_KEY`, and first inspect the resumable plan:
 
 ```bash
@@ -155,8 +219,8 @@ states. Final answers are outside the reasoning region, and stage 07d stops
 intervening after `</think>`. The exact event set is recorded and can be frozen
 with `probe.progress_event_labels` in the config.
 
-If the hosted quota is unavailable, do not return to the verbose 9B chunk
-labeler. Use the same compact format locally with the official
+The compact MoE labeler remains as a generative local fallback and benchmark
+for the ModernBERT replacement. It uses the same compact format with the official
 `Qwen/Qwen3-30B-A3B-GPTQ-Int4` checkpoint. It has 30.5B total parameters but
 only 3.3B active per token, and one vLLM engine shards it across both T4s. The
 judge emits only a compact label string and one audit string for each complete
@@ -186,7 +250,7 @@ disagreements and model-marked uncertainty are written to
 
 The earlier verbose local labeler remains available for reproducing old runs.
 It resumes the same chunk cache with one 4-bit vLLM Qwen3.5-9B replica on each
-T4, but the compact MoE labeler above is preferred for new work:
+T4, but it is retained only for reproducing the earlier generative-judge path:
 
 ```bash
 pip install -q uv 'bitsandbytes>=0.49.2'
