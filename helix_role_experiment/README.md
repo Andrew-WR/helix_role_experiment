@@ -155,8 +155,38 @@ states. Final answers are outside the reasoning region, and stage 07d stops
 intervening after `</think>`. The exact event set is recorded and can be frozen
 with `probe.progress_event_labels` in the config.
 
-If API credits are unavailable, the separate local labeler resumes the exact
-same cache with one 4-bit vLLM Qwen3.5-9B replica on each T4:
+If the hosted quota is unavailable, do not return to the verbose 9B chunk
+labeler. Use the same compact format locally with the official
+`Qwen/Qwen3-30B-A3B-GPTQ-Int4` checkpoint. It has 30.5B total parameters but
+only 3.3B active per token, and one vLLM engine shards it across both T4s. The
+judge emits only a compact label string and one audit string for each complete
+trajectory, rather than thousands of JSON tokens per chunk:
+
+```bash
+pip install -q uv
+uv pip install --system vllm --torch-backend=auto \
+  --extra-index-url https://wheels.vllm.ai/nightly
+pip install -e .
+
+python scripts/07b_local_compact_label_subgoal_events.py \
+  --config configs/qwen_9b_readiness_kaggle.json \
+  --limit 2 --batch-size 2
+
+python scripts/07b_local_compact_label_subgoal_events.py \
+  --config configs/qwen_9b_readiness_kaggle.json \
+  --batch-size 4
+```
+
+The first command is a two-trajectory memory and semantic smoke test. The
+second resumes and fills every missing trajectory. Existing complete labels
+are never replaced. One atomic result is saved after both passes for a
+trajectory; an interrupted in-flight batch is the only work repeated. Audit
+disagreements and model-marked uncertainty are written to
+`tables/local_compact_review_queue.jsonl` for selective human review.
+
+The earlier verbose local labeler remains available for reproducing old runs.
+It resumes the same chunk cache with one 4-bit vLLM Qwen3.5-9B replica on each
+T4, but the compact MoE labeler above is preferred for new work:
 
 ```bash
 pip install -q uv 'bitsandbytes>=0.49.2'
