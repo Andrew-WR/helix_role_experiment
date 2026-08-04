@@ -1,7 +1,9 @@
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "07b_inkling_label_subgoal_events.py"
@@ -52,6 +54,10 @@ class InklingLabelingTests(unittest.TestCase):
         self.assertEqual(values["model"], "thinkingmachines/Inkling-NVFP4")
         self.assertEqual(values["reasoning_effort"], "none")
         self.assertEqual(values["audit_passes"], 1)
+
+    def test_exact_modal_key_environment_name_is_supported(self):
+        with patch.dict(os.environ, {"Modal-Key": "test-value"}, clear=True):
+            self.assertEqual(LABELER.secret("Modal-Key"), "test-value")
 
 
 if __name__ == "__main__":

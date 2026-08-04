@@ -64,22 +64,33 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def secret(name: str) -> str:
-    value = os.environ.get(name)
-    if value:
-        return value
+def secret(*names: str) -> str:
+    if not names:
+        raise ValueError("at least one secret name is required")
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
     try:
         from kaggle_secrets import UserSecretsClient
 
-        value = UserSecretsClient().get_secret(name)
+        client = UserSecretsClient()
+        value = None
+        for name in names:
+            try:
+                value = client.get_secret(name)
+            except Exception:
+                continue
+            if value:
+                os.environ[name] = value
+                return value
     except Exception as exc:
         raise RuntimeError(
-            f"Set {name} or create the Kaggle secret {name}"
+            f"Set one of {', '.join(names)} or create the matching Kaggle secret"
         ) from exc
-    if not value:
-        raise RuntimeError(f"Kaggle secret {name} is empty")
-    os.environ[name] = value
-    return value
+    raise RuntimeError(
+        f"None of the Kaggle secrets were found: {', '.join(names)}"
+    )
 
 
 def compact_schema(sentence_count: int) -> dict[str, Any]:
@@ -357,8 +368,10 @@ async def run_immediate(
     client = AsyncOpenAI(
         base_url=str(values["base_url"]), api_key="unused",
         default_headers={
-            "Modal-Key": secret("MODAL_PROXY_TOKEN_ID"),
-            "Modal-Secret": secret("MODAL_PROXY_TOKEN_SECRET"),
+            "Modal-Key": secret("Modal-Key", "MODAL_PROXY_TOKEN_ID"),
+            "Modal-Secret": secret(
+                "Modal-Secre", "Modal-Secret", "MODAL_PROXY_TOKEN_SECRET"
+            ),
         },
         max_retries=0,
     )

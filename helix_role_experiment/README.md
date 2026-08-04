@@ -89,8 +89,11 @@ schema. A second audit pass is enabled by default; sentences whose two passes
 disagree are placed in `tables/inkling_review_queue.jsonl`. Each completed
 trajectory is written atomically, so Ctrl-C is safe and rerunning resumes.
 
-Create Kaggle secrets named `MODAL_PROXY_TOKEN_ID` and
-`MODAL_PROXY_TOKEN_SECRET`, then run:
+Create Kaggle secrets named `Modal-Key` and `Modal-Secre` (the latter is the
+exact stored name). They are sent as the `Modal-Key` and `Modal-Secret` HTTP
+headers, respectively. The older `MODAL_PROXY_TOKEN_ID` and
+`MODAL_PROXY_TOKEN_SECRET` environment names remain supported as fallbacks.
+Then run:
 
 ```bash
 python -m pip install -e '.[labeling]'
