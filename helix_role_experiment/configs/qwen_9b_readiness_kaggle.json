@@ -70,6 +70,17 @@
       "output": 3.0
     }
   },
+  "inkling_labeling": {
+    "base_url": "https://andrewwafik350--ep-inkling-nvfp4-server.us-west.modal.direct/v1",
+    "model": "thinkingmachines/Inkling-NVFP4",
+    "concurrency": 4,
+    "validation_attempts": 3,
+    "audit_passes": 1,
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "max_tokens": 2048,
+    "reasoning_effort": "none"
+  },
   "event_tagger": {
     "model_id": "answerdotai/ModernBERT-base",
     "max_length": 2048,

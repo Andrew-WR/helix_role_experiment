@@ -80,7 +80,42 @@ python scripts/07c_fit_survival_probes.py --config configs/qwen_9b_readiness_kag
 python scripts/07d_run_readiness_steering.py --config configs/qwen_9b_readiness_kaggle.json
 ```
 
-### Preferred remaining-label path: sequential ModernBERT
+### Preferred external-label path: Modal Inkling
+
+When Modal credits are available, use Inkling instead of Gemini, Qwen, or the
+ModernBERT pseudo-labeler. Each pass reads one complete 3--7k-token trajectory
+and emits one compact character per immutable sentence under a strict JSON
+schema. A second audit pass is enabled by default; sentences whose two passes
+disagree are placed in `tables/inkling_review_queue.jsonl`. Each completed
+trajectory is written atomically, so Ctrl-C is safe and rerunning resumes.
+
+Create Kaggle secrets named `MODAL_PROXY_TOKEN_ID` and
+`MODAL_PROXY_TOKEN_SECRET`, then run:
+
+```bash
+python -m pip install -e '.[labeling]'
+
+python scripts/07b_inkling_label_subgoal_events.py \
+  --config configs/qwen_9b_readiness_kaggle.json prepare
+
+# Smoke-test two missing trajectories.
+python scripts/07b_inkling_label_subgoal_events.py \
+  --config configs/qwen_9b_readiness_kaggle.json run --limit 2
+
+# Resume and finish everything missing.
+python scripts/07b_inkling_label_subgoal_events.py \
+  --config configs/qwen_9b_readiness_kaggle.json run
+
+python scripts/07b_inkling_label_subgoal_events.py \
+  --config configs/qwen_9b_readiness_kaggle.json validate
+```
+
+The default concurrency is four. Reduce it with `--concurrency 1` if the Modal
+deployment throttles. To halve calls, set `inkling_labeling.audit_passes` to
+zero; the default of one is preferred for annotation quality. Existing valid
+labels are preserved, including the original 15 trajectories.
+
+### Local fallback: sequential ModernBERT
 
 The preferred replacement for hosted or generative-LLM labeling is the
 sequential `answerdotai/ModernBERT-base` event tagger. It trains on the valid
