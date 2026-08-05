@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
 def settings(config: dict[str, Any]) -> dict[str, Any]:
     values = {
         "top_k_heads": 16,
-        "proximity_ignore": 4,
+        "proximity_ignore": 1,
         "anchor_fraction": 0.10,
         "query_tokens_per_sentence": 4,
         "query_chunk_size": 32,
@@ -66,7 +66,9 @@ def trace_files(paths: dict[str, Path]) -> list[Path]:
     return sorted((paths["traces"] / "readiness_baseline").glob("*.json"))
 
 
-def valid_artifact(path: Path, trace: dict[str, Any]) -> bool:
+def valid_artifact(
+    path: Path, trace: dict[str, Any], proximity_ignore: int
+) -> bool:
     if not path.exists():
         return False
     try:
@@ -74,10 +76,26 @@ def valid_artifact(path: Path, trace: dict[str, Any]) -> bool:
             scores = data["vertical_scores"]
             kurtosis = data["head_kurtosis"]
             sentence_ids = data["sentence_ids"].astype(str).tolist()
+            # Raw sentence attention is threshold-independent. Legacy artifacts
+            # only retained statistics calculated with the original value of 4.
+            reusable = "sentence_attention" in data.files
+            stored_proximity = int(
+                data["proximity_ignore"][0]
+            ) if "proximity_ignore" in data.files else 4
+            raw_shape_ok = True
+            if reusable:
+                raw = data["sentence_attention"]
+                raw_shape_ok = (
+                    raw.ndim == 4
+                    and raw.shape[:2] == scores.shape[:2]
+                    and raw.shape[-2:] == (len(sentence_ids), len(sentence_ids))
+                )
             return (
                 scores.ndim == 3
                 and kurtosis.shape == scores.shape[:2]
                 and len(sentence_ids) == scores.shape[-1]
+                and raw_shape_ok
+                and (reusable or stored_proximity == int(proximity_ignore))
                 and sentence_ids == [
                     str(row["sentence_id"]) for row in trace["sentences"]
                     if row.get("is_reasoning", False)
@@ -407,7 +425,9 @@ def worker(
     for source in sources:
         trace = json.loads(source.read_text(encoding="utf-8"))
         target = destination / f"{trace['trace_id']}.npz"
-        if not valid_artifact(target, trace):
+        if not valid_artifact(
+            target, trace, int(values["proximity_ignore"])
+        ):
             pending.append((trace, target))
     complete = len(sources) - len(pending)
     print(
@@ -432,6 +452,12 @@ def worker(
                 handle, layers=layers,
                 sentence_ids=np.asarray(sentence_ids),
                 vertical_scores=vertical, head_kurtosis=kurtosis,
+                # Preserve the actual float32 sentence aggregates so later
+                # proximity sweeps are exact and never require Qwen again.
+                sentence_attention=matrices.astype(np.float32),
+                proximity_ignore=np.asarray(
+                    [int(values["proximity_ignore"])], dtype=np.int64
+                ),
                 query_tokens_per_sentence=np.asarray(
                     [int(values["query_tokens_per_sentence"])]
                 ),
@@ -449,21 +475,44 @@ def worker(
         torch.cuda.empty_cache()
 
 
+def artifact_statistics(
+    path: Path, proximity_ignore: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    with np.load(path) as data:
+        layers = data["layers"].astype(np.int64)
+        if "sentence_attention" in data.files:
+            vertical, kurtosis = receiver_head_statistics(
+                data["sentence_attention"].astype(np.float32), proximity_ignore
+            )
+        else:
+            stored_proximity = int(
+                data["proximity_ignore"][0]
+            ) if "proximity_ignore" in data.files else 4
+            if stored_proximity != proximity_ignore:
+                raise RuntimeError(
+                    f"{path} only contains scores for proximity_ignore="
+                    f"{stored_proximity}; recollect it once to cache raw sentence "
+                    "attention"
+                )
+            vertical = data["vertical_scores"].astype(np.float32)
+            kurtosis = data["head_kurtosis"].astype(np.float32)
+    return layers, vertical, kurtosis
+
+
 def select_receiver_heads(
-    artifacts: list[tuple[dict[str, Any], Path]], top_k: int
+    artifacts: list[tuple[dict[str, Any], Path]], top_k: int,
+    proximity_ignore: int,
 ) -> list[dict[str, Any]]:
     train = [(trace, path) for trace, path in artifacts if trace["split"] == "train"]
     if not train:
         raise RuntimeError("receiver-head selection requires training traces")
     values: dict[tuple[int, int], list[float]] = {}
     for _, path in train:
-        with np.load(path) as data:
-            layers = data["layers"].astype(int)
-            kurtosis = data["head_kurtosis"]
-            for local_layer, layer in enumerate(layers):
-                for head, score in enumerate(kurtosis[local_layer]):
-                    if np.isfinite(score):
-                        values.setdefault((int(layer), head), []).append(float(score))
+        layers, _, kurtosis = artifact_statistics(path, proximity_ignore)
+        for local_layer, layer in enumerate(layers):
+            for head, score in enumerate(kurtosis[local_layer]):
+                if np.isfinite(score):
+                    values.setdefault((int(layer), head), []).append(float(score))
     ranked = sorted(
         (
             {"layer": layer, "head": head, "median_train_kurtosis": float(np.median(scores)),
@@ -482,7 +531,7 @@ def finalize(config: dict[str, Any], paths: dict[str, Path]) -> None:
     for source in trace_files(paths):
         trace = json.loads(source.read_text(encoding="utf-8"))
         path = artifact_directory(paths) / f"{trace['trace_id']}.npz"
-        if valid_artifact(path, trace):
+        if valid_artifact(path, trace, int(values["proximity_ignore"])):
             artifacts.append((trace, path))
         else:
             missing.append(str(trace["trace_id"]))
@@ -491,15 +540,21 @@ def finalize(config: dict[str, Any], paths: dict[str, Path]) -> None:
             f"missing {len(missing)} attention artifacts; rerun collect. "
             f"First missing: {missing[0]}"
         )
-    heads = select_receiver_heads(artifacts, int(values["top_k_heads"]))
+    heads = select_receiver_heads(
+        artifacts, int(values["top_k_heads"]),
+        int(values["proximity_ignore"]),
+    )
     if not heads:
         raise RuntimeError("no finite receiver heads were found")
     records = []
     fraction = float(values["anchor_fraction"])
     for trace, path in artifacts:
+        layers_array, vertical_array, _ = artifact_statistics(
+            path, int(values["proximity_ignore"])
+        )
+        layers = layers_array.astype(int).tolist()
+        vertical = vertical_array.astype(np.float64)
         with np.load(path) as data:
-            layers = data["layers"].astype(int).tolist()
-            vertical = data["vertical_scores"].astype(np.float64)
             sentence_ids = data["sentence_ids"].astype(str).tolist()
         selected = []
         for head in heads:

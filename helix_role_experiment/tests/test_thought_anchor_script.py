@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,6 +19,7 @@ class ThoughtAnchorScriptTests(unittest.TestCase):
     def test_settings_are_memory_bounded(self):
         values = COLLECTOR.settings({})
         self.assertEqual(values["top_k_heads"], 16)
+        self.assertEqual(values["proximity_ignore"], 1)
         self.assertEqual(values["query_tokens_per_sentence"], 4)
         self.assertEqual(values["query_chunk_size"], 32)
         self.assertEqual(values["teacher_force_chunk_tokens"], 256)
@@ -40,6 +42,46 @@ class ThoughtAnchorScriptTests(unittest.TestCase):
         positions, selected_owners = accumulator.query_window(3)
         self.assertEqual(positions.tolist(), [0, 1, 2])
         self.assertEqual(selected_owners.tolist(), [1, 1, 2])
+
+    def test_legacy_artifact_cannot_change_proximity_without_attention(self):
+        trace = {
+            "sentences": [
+                {"sentence_id": "s0", "is_reasoning": True},
+                {"sentence_id": "s1", "is_reasoning": True},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.npz"
+            np.savez(
+                path,
+                sentence_ids=np.asarray(["s0", "s1"]),
+                vertical_scores=np.zeros((1, 1, 2)),
+                head_kurtosis=np.zeros((1, 1)),
+            )
+            self.assertTrue(COLLECTOR.valid_artifact(path, trace, 4))
+            self.assertFalse(COLLECTOR.valid_artifact(path, trace, 1))
+
+    def test_raw_attention_artifact_is_reusable_across_proximities(self):
+        trace = {
+            "sentences": [
+                {"sentence_id": f"s{i}", "is_reasoning": True}
+                for i in range(6)
+            ]
+        }
+        matrix = np.zeros((1, 1, 6, 6), dtype=np.float16)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "reusable.npz"
+            np.savez(
+                path,
+                layers=np.asarray([3]),
+                sentence_ids=np.asarray([f"s{i}" for i in range(6)]),
+                vertical_scores=np.zeros((1, 1, 6)),
+                head_kurtosis=np.zeros((1, 1)),
+                sentence_attention=matrix,
+                proximity_ignore=np.asarray([1]),
+            )
+            self.assertTrue(COLLECTOR.valid_artifact(path, trace, 1))
+            self.assertTrue(COLLECTOR.valid_artifact(path, trace, 4))
 
 
 if __name__ == "__main__":
