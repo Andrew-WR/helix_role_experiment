@@ -63,6 +63,72 @@ def attention_reorientation_scores(
     return scores
 
 
+def attention_burst_features(
+    sentence_attention: np.ndarray,
+    echo_horizon: int = 3,
+) -> dict[str, np.ndarray]:
+    """Extract attention features for stable, locally connected progress bursts.
+
+    Input is ``[heads, query_sentence, key_sentence]``. Every row is normalized
+    over its causal history before recent-dependency and echo features are
+    computed. Returned features are high-is-progress-directional except that
+    callers should still calibrate them against strong labels.
+    """
+    values = np.asarray(sentence_attention, dtype=np.float64)
+    if values.ndim != 3 or values.shape[-1] != values.shape[-2]:
+        raise ValueError(
+            "sentence attention must be [heads, sentences, sentences]"
+        )
+    if echo_horizon <= 0:
+        raise ValueError("echo horizon must be positive")
+    head_count, sentence_count, _ = values.shape
+    normalized = np.full_like(values, np.nan)
+    for query_index in range(1, sentence_count):
+        causal = np.maximum(values[:, query_index, :query_index], 0.0)
+        causal[~np.isfinite(causal)] = 0.0
+        totals = causal.sum(axis=-1, keepdims=True)
+        valid = totals[:, 0] > 0
+        normalized[valid, query_index, :query_index] = (
+            causal[valid] / totals[valid]
+        )
+
+    reorientation = attention_reorientation_scores(values, "median")
+    stability = 1.0 - reorientation / np.log(2.0)
+    recent_one = np.full(sentence_count, np.nan)
+    recent_two = np.full(sentence_count, np.nan)
+    local_echo = np.full(sentence_count, np.nan)
+    for sentence_index in range(1, sentence_count):
+        one = normalized[:, sentence_index, sentence_index - 1]
+        if np.isfinite(one).any():
+            recent_one[sentence_index] = float(np.nanmedian(one))
+        if sentence_index >= 2:
+            two = normalized[:, sentence_index, sentence_index - 2]
+            if np.isfinite(two).any():
+                recent_two[sentence_index] = float(np.nanmedian(two))
+        future_stop = min(sentence_count, sentence_index + echo_horizon + 1)
+        if sentence_index + 1 < future_stop:
+            per_head = []
+            for head in range(head_count):
+                received = normalized[
+                    head, sentence_index + 1:future_stop, sentence_index
+                ]
+                if np.isfinite(received).any():
+                    per_head.append(float(np.nansum(received)))
+            if per_head:
+                local_echo[sentence_index] = float(np.median(per_head))
+    transition_then_stabilization = np.full(sentence_count, np.nan)
+    transition_then_stabilization[1:] = (
+        reorientation[:-1] - reorientation[1:]
+    )
+    return {
+        "stability": stability,
+        "recent_one": recent_one,
+        "recent_two": recent_two,
+        "local_echo": local_echo,
+        "transition_then_stabilization": transition_then_stabilization,
+    }
+
+
 @dataclass
 class SentenceCounterfactual:
     sentence_index: int

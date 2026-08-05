@@ -20,24 +20,32 @@ from helix_role_experiment.event_tagger import (
     select_event_threshold,
 )
 from helix_role_experiment.thought_anchors import (
-    attention_reorientation_scores,
+    attention_burst_features,
     top_fraction_flags,
 )
 
 
-PSEUDO_SOURCE = "attention_reorientation_pseudo_labeler"
+PSEUDO_SOURCE = "attention_burst_pseudo_labeler"
 EXCLUDED_SEED_SOURCES = {
     PSEUDO_SOURCE,
+    "attention_reorientation_pseudo_labeler",
     "modernbert_sequential_event_tagger",
 }
 POSITIVE_LABELS = {"forward_progress", "productive_backtrack"}
+FEATURE_NAMES = (
+    "stability",
+    "recent_one",
+    "recent_two",
+    "local_echo",
+    "transition_then_stabilization",
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Calibrate attention reorientation on strong labels and pseudo-label "
-            "only missing training trajectories"
+            "Fit a burst-progress attention labeler on strong train labels and "
+            "pseudo-label only missing training trajectories"
         )
     )
     parser.add_argument("--config", required=True)
@@ -46,14 +54,15 @@ def parse_args() -> argparse.Namespace:
 
 def settings(config: dict[str, Any]) -> dict[str, Any]:
     values = {
-        "target_precision": 0.50,
-        "minimum_threshold": 0.50,
+        "target_precision": 0.25,
+        "minimum_threshold": 0.05,
         "review_margin": 0.05,
-        "variants": [
-            "all_head_median",
-            "all_head_upper_quartile",
-            "receiver_head_median",
-        ],
+        "echo_horizon": 3,
+        "ridge": 1.0,
+        "minimum_validation_precision": 0.13,
+        "minimum_validation_recall": 0.25,
+        "minimum_validation_lift": 2.0,
+        "require_validation_gate": True,
     }
     values.update(config.get("attention_reorientation", {}))
     return values
@@ -81,30 +90,17 @@ def strong_annotations(paths: dict[str, Path]) -> dict[str, dict[str, Any]]:
     }
 
 
-def receiver_head_indices(
-    paths: dict[str, Path], layers: list[int], head_count: int,
-) -> list[tuple[int, int]]:
-    path = paths["tables"] / "thought_anchor_receiver_heads.json"
-    if not path.exists():
-        return []
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    indices = []
-    for row in payload.get("heads", []):
-        layer = int(row["layer"])
-        head = int(row["head"])
-        if layer in layers and 0 <= head < head_count:
-            indices.append((layers.index(layer), head))
-    return indices
+def percentile_features(raw: dict[str, np.ndarray]) -> np.ndarray:
+    columns = []
+    for name in FEATURE_NAMES:
+        _, percentiles = top_fraction_flags(raw[name], 0.5)
+        columns.append(percentiles)
+    return np.column_stack(columns)
 
 
-def percentile_scores(raw_scores: np.ndarray) -> np.ndarray:
-    _, percentiles = top_fraction_flags(raw_scores, 0.5)
-    return percentiles
-
-
-def trace_scores(
-    trace: dict[str, Any], paths: dict[str, Path]
-) -> dict[str, np.ndarray]:
+def trace_features(
+    trace: dict[str, Any], paths: dict[str, Path], echo_horizon: int,
+) -> np.ndarray:
     artifact = (
         paths["traces"] / "thought_anchor_attention"
         / f"{trace['trace_id']}.npz"
@@ -118,7 +114,6 @@ def trace_scores(
                 "collection once with the current code"
             )
         attention = data["sentence_attention"].astype(np.float32)
-        layers = data["layers"].astype(int).tolist()
         sentence_ids = data["sentence_ids"].astype(str).tolist()
     reasoning_ids = [
         str(row["sentence_id"]) for row in trace["sentences"]
@@ -127,20 +122,9 @@ def trace_scores(
     if sentence_ids != reasoning_ids:
         raise RuntimeError(f"attention/sentence alignment mismatch for {trace['trace_id']}")
     all_heads = attention.reshape(-1, attention.shape[-2], attention.shape[-1])
-    selected = receiver_head_indices(paths, layers, attention.shape[1])
-    receiver = np.asarray(
-        [attention[layer, head] for layer, head in selected], dtype=np.float32
-    ) if selected else all_heads
-    variants = {
-        "all_head_median": attention_reorientation_scores(all_heads, "median"),
-        "all_head_upper_quartile": attention_reorientation_scores(
-            all_heads, "upper_quartile"
-        ),
-        "receiver_head_median": attention_reorientation_scores(
-            receiver, "median"
-        ),
-    }
-    return {name: percentile_scores(score) for name, score in variants.items()}
+    return percentile_features(
+        attention_burst_features(all_heads, echo_horizon=echo_horizon)
+    )
 
 
 def labels_for_trace(
@@ -158,74 +142,178 @@ def labels_for_trace(
     ], dtype=np.int64)
 
 
-def choose_detector(
-    traces: list[dict[str, Any]],
-    scores: dict[str, dict[str, np.ndarray]],
-    seeds: dict[str, dict[str, Any]],
+def fit_logistic(
+    features: np.ndarray, labels: np.ndarray, ridge: float,
+) -> dict[str, np.ndarray | float]:
+    x = np.asarray(features, dtype=np.float64)
+    y = np.asarray(labels, dtype=np.float64)
+    if len(x) != len(y) or x.ndim != 2:
+        raise ValueError("invalid logistic training arrays")
+    if not np.any(y == 1) or not np.any(y == 0):
+        raise ValueError("logistic training requires both classes")
+    mean = np.nanmean(x, axis=0)
+    mean[~np.isfinite(mean)] = 0.0
+    scale = np.nanstd(x, axis=0)
+    scale[~np.isfinite(scale) | (scale < 1e-8)] = 1.0
+    standardized = (np.where(np.isfinite(x), x, mean) - mean) / scale
+    design = np.column_stack((np.ones(len(standardized)), standardized))
+    positive_weight = len(y) / (2.0 * np.sum(y == 1))
+    negative_weight = len(y) / (2.0 * np.sum(y == 0))
+    sample_weight = np.where(y == 1, positive_weight, negative_weight)
+    coefficients = np.zeros(design.shape[1], dtype=np.float64)
+    penalty = np.eye(design.shape[1], dtype=np.float64) * float(ridge)
+    penalty[0, 0] = 0.0
+    for _ in range(100):
+        logits = np.clip(design @ coefficients, -30.0, 30.0)
+        probabilities = 1.0 / (1.0 + np.exp(-logits))
+        gradient = design.T @ (sample_weight * (probabilities - y))
+        gradient += penalty @ coefficients
+        curvature = sample_weight * probabilities * (1.0 - probabilities)
+        hessian = design.T @ (curvature[:, None] * design) + penalty
+        step = np.linalg.solve(hessian + np.eye(len(coefficients)) * 1e-8, gradient)
+        coefficients -= step
+        if float(np.linalg.norm(step)) < 1e-7:
+            break
+    return {
+        "mean": mean,
+        "scale": scale,
+        "intercept": float(coefficients[0]),
+        "coefficients": coefficients[1:],
+    }
+
+
+def predict_logistic(
+    model: dict[str, np.ndarray | float], features: np.ndarray,
+) -> np.ndarray:
+    x = np.asarray(features, dtype=np.float64)
+    mean = np.asarray(model["mean"], dtype=np.float64)
+    scale = np.asarray(model["scale"], dtype=np.float64)
+    standardized = (np.where(np.isfinite(x), x, mean) - mean) / scale
+    logits = float(model["intercept"]) + standardized @ np.asarray(
+        model["coefficients"], dtype=np.float64
+    )
+    logits = np.clip(logits, -30.0, 30.0)
+    return 1.0 / (1.0 + np.exp(-logits))
+
+
+def labeled_groups(
+    traces: list[dict[str, Any]], features: dict[str, np.ndarray],
+    seeds: dict[str, dict[str, Any]], split: str,
+) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    groups = []
+    for trace in traces:
+        trace_id = str(trace["trace_id"])
+        if trace["split"] == split and trace_id in seeds:
+            groups.append((
+                trace_id, features[trace_id], labels_for_trace(trace, seeds[trace_id])
+            ))
+    return groups
+
+
+def fit_oof_detector(
+    train_groups: list[tuple[str, np.ndarray, np.ndarray]],
     values: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, np.ndarray | float]]:
+    if len(train_groups) < 2:
+        raise RuntimeError("attention burst calibration requires two train trajectories")
+    oof_labels, oof_probabilities = [], []
+    ridge = float(values["ridge"])
+    for held_out, (_, held_features, held_labels) in enumerate(train_groups):
+        fit_features = np.concatenate([
+            group[1] for index, group in enumerate(train_groups)
+            if index != held_out
+        ])
+        fit_labels = np.concatenate([
+            group[2] for index, group in enumerate(train_groups)
+            if index != held_out
+        ])
+        model = fit_logistic(fit_features, fit_labels, ridge)
+        oof_probabilities.extend(predict_logistic(model, held_features).tolist())
+        oof_labels.extend(held_labels.tolist())
+    threshold, metrics = select_event_threshold(
+        np.asarray(oof_labels),
+        np.asarray(oof_probabilities),
+        minimum_threshold=float(values["minimum_threshold"]),
+        target_precision=float(values["target_precision"]),
+    )
+    all_features = np.concatenate([group[1] for group in train_groups])
+    all_labels = np.concatenate([group[2] for group in train_groups])
+    final_model = fit_logistic(all_features, all_labels, ridge)
+    report = {
+        "threshold": float(threshold),
+        "oof_metrics": metrics,
+        "precision_target_met": bool(
+            metrics["tp"] > 0
+            and metrics["precision"] >= float(values["target_precision"])
+        ),
+        "train_trajectory_count": len(train_groups),
+        "feature_names": list(FEATURE_NAMES),
+        "coefficients": {
+            name: float(value) for name, value in zip(
+                FEATURE_NAMES, np.asarray(final_model["coefficients"])
+            )
+        },
+        "intercept": float(final_model["intercept"]),
+        "imputation_mean": np.asarray(final_model["mean"]).tolist(),
+        "standardization_scale": np.asarray(final_model["scale"]).tolist(),
+    }
+    return report, final_model
+
+
+def evaluate_groups(
+    groups: list[tuple[str, np.ndarray, np.ndarray]],
+    model: dict[str, np.ndarray | float], threshold: float,
 ) -> dict[str, Any]:
-    candidates = []
-    for variant in values["variants"]:
-        train_labels, train_scores = [], []
-        for trace in traces:
-            trace_id = str(trace["trace_id"])
-            if trace["split"] != "train" or trace_id not in seeds:
-                continue
-            labels = labels_for_trace(trace, seeds[trace_id])
-            local_scores = scores[trace_id][variant]
-            finite = np.isfinite(local_scores)
-            train_labels.extend(labels[finite].tolist())
-            train_scores.extend(local_scores[finite].tolist())
-        if not train_labels:
-            raise RuntimeError("no labeled training sentences for calibration")
-        threshold, metrics = select_event_threshold(
-            np.asarray(train_labels),
-            np.asarray(train_scores),
-            minimum_threshold=float(values["minimum_threshold"]),
-            target_precision=float(values["target_precision"]),
+    if not groups:
+        return {"trajectory_count": 0, "unavailable": True}
+    labels = np.concatenate([group[2] for group in groups])
+    probabilities = np.concatenate([
+        predict_logistic(model, group[1]) for group in groups
+    ])
+    prevalence = float(np.mean(labels)) if len(labels) else 0.0
+    metrics = binary_metrics(labels, probabilities >= threshold)
+    return {
+        "trajectory_count": len(groups),
+        "prevalence": prevalence,
+        "precision_lift": (
+            metrics["precision"] / prevalence if prevalence else None
+        ),
+        **metrics,
+    }
+
+
+def validation_gate(metrics: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
+    if metrics.get("unavailable"):
+        return {"passed": False, "reasons": ["validation labels unavailable"]}
+    required_precision = max(
+        float(values["minimum_validation_precision"]),
+        float(values["minimum_validation_lift"]) * float(metrics["prevalence"]),
+    )
+    reasons = []
+    if float(metrics["precision"]) < required_precision:
+        reasons.append(
+            f"precision {metrics['precision']:.3f} < {required_precision:.3f}"
         )
-        candidates.append({
-            "variant": variant,
-            "threshold": float(threshold),
-            **{f"train_{key}": value for key, value in metrics.items()},
-            "precision_target_met": bool(
-                metrics["tp"] > 0
-                and metrics["precision"] >= float(values["target_precision"])
-            ),
-        })
-    selected = max(candidates, key=lambda row: (
-        int(row["precision_target_met"]),
-        row["train_recall"] if row["precision_target_met"] else row["train_precision"],
-        row["train_precision"], row["train_f1"], row["threshold"],
-    ))
-    return {"selected": selected, "candidates": candidates}
+    if float(metrics["recall"]) < float(values["minimum_validation_recall"]):
+        reasons.append(
+            f"recall {metrics['recall']:.3f} < "
+            f"{float(values['minimum_validation_recall']):.3f}"
+        )
+    return {
+        "passed": not reasons,
+        "required_precision": required_precision,
+        "required_recall": float(values["minimum_validation_recall"]),
+        "reasons": reasons,
+    }
 
 
-def split_metrics(
-    traces: list[dict[str, Any]], scores: dict[str, dict[str, np.ndarray]],
-    seeds: dict[str, dict[str, Any]], detector: dict[str, Any],
-) -> dict[str, Any]:
-    variant = str(detector["variant"])
-    threshold = float(detector["threshold"])
-    output = {}
-    for split in ("train", "val", "test"):
-        labels, predictions = [], []
-        trace_count = 0
-        for trace in traces:
-            trace_id = str(trace["trace_id"])
-            if trace["split"] != split or trace_id not in seeds:
-                continue
-            truth = labels_for_trace(trace, seeds[trace_id])
-            local = scores[trace_id][variant]
-            finite = np.isfinite(local)
-            labels.extend(truth[finite].tolist())
-            predictions.extend((local[finite] >= threshold).tolist())
-            trace_count += 1
-        output[split] = {
-            "trajectory_count": trace_count,
-            **binary_metrics(np.asarray(labels), np.asarray(predictions)),
-        } if labels else {"trajectory_count": trace_count, "unavailable": True}
-    return output
+def model_payload(model: dict[str, np.ndarray | float]) -> dict[str, Any]:
+    return {
+        "mean": np.asarray(model["mean"]).tolist(),
+        "scale": np.asarray(model["scale"]).tolist(),
+        "intercept": float(model["intercept"]),
+        "coefficients": np.asarray(model["coefficients"]).tolist(),
+    }
 
 
 def main() -> None:
@@ -242,50 +330,87 @@ def main() -> None:
         trace for trace in traces
         if trace["split"] == "train" or str(trace["trace_id"]) in seeds
     ]
-    scores: dict[str, dict[str, np.ndarray]] = {}
+    features: dict[str, np.ndarray] = {}
     for index, trace in enumerate(eligible, start=1):
-        scores[str(trace["trace_id"])] = trace_scores(trace, paths)
-        print(
-            f"[attention reorientation {index}/{len(eligible)}] "
-            f"{trace['trace_id']}", flush=True,
+        features[str(trace["trace_id"])] = trace_features(
+            trace, paths, int(values["echo_horizon"])
         )
-    calibration = choose_detector(eligible, scores, seeds, values)
-    detector = calibration["selected"]
-    calibration["held_out_metrics"] = split_metrics(
-        eligible, scores, seeds, detector
-    )
-    calibration["positive_labels"] = sorted(POSITIVE_LABELS)
-    calibration["pseudo_label_scope"] = "missing_train_trajectories_only"
-    calibration["target_precision"] = float(values["target_precision"])
+        print(
+            f"[attention burst {index}/{len(eligible)}] {trace['trace_id']}",
+            flush=True,
+        )
+
+    train_groups = labeled_groups(traces, features, seeds, "train")
+    val_groups = labeled_groups(traces, features, seeds, "val")
+    test_groups = labeled_groups(traces, features, seeds, "test")
+    detector, model = fit_oof_detector(train_groups, values)
+    threshold = float(detector["threshold"])
+    validation = evaluate_groups(val_groups, model, threshold)
+    test = evaluate_groups(test_groups, model, threshold)
+    gate = validation_gate(validation, values)
+    calibration = {
+        "detector": detector,
+        "validation_metrics": validation,
+        "test_metrics": test,
+        "validation_gate": gate,
+        "positive_labels": sorted(POSITIVE_LABELS),
+        "pseudo_label_scope": "missing_train_trajectories_only",
+        "echo_horizon": int(values["echo_horizon"]),
+        "target_precision": float(values["target_precision"]),
+        "model": model_payload(model),
+    }
     atomic_json(
         paths["tables"] / "attention_reorientation_calibration.json",
         calibration,
     )
 
+    order = {str(trace["trace_id"]): index for index, trace in enumerate(traces)}
+    strong_rows = sorted(
+        seeds.values(), key=lambda row: order.get(str(row["trace_id"]), 10**9)
+    )
+    atomic_write_jsonl(
+        paths["tables"] / "sentence_annotations_strong_seed.jsonl", strong_rows
+    )
+    gate_required = bool(values["require_validation_gate"])
+    if gate_required and not gate["passed"]:
+        atomic_write_jsonl(paths["tables"] / "sentence_annotations.jsonl", strong_rows)
+        print(json.dumps(calibration, indent=2), flush=True)
+        print(
+            "Validation gate failed; restored strong labels and wrote no "
+            f"pseudo-labels. Reasons: {gate['reasons']}", flush=True,
+        )
+        return
+
     output = dict(seeds)
     score_records = []
     pseudo_count = 0
-    variant = str(detector["variant"])
-    threshold = float(detector["threshold"])
     for trace in traces:
         trace_id = str(trace["trace_id"])
         if trace_id in seeds or trace["split"] != "train":
             continue
-        reasoning_scores = scores[trace_id][variant]
+        local_features = features[trace_id]
+        reasoning_probabilities = predict_logistic(model, local_features)
         probabilities: list[float | None] = []
         reasoning_index = 0
         sentence_scores = []
         for sentence in trace["sentences"]:
             if sentence.get("is_reasoning", False):
-                probability = float(reasoning_scores[reasoning_index])
-                if not np.isfinite(probability):
-                    probability = 0.0
+                probability = float(reasoning_probabilities[reasoning_index])
+                feature_values = {
+                    name: (
+                        float(local_features[reasoning_index, feature_index])
+                        if np.isfinite(local_features[reasoning_index, feature_index])
+                        else None
+                    )
+                    for feature_index, name in enumerate(FEATURE_NAMES)
+                }
                 reasoning_index += 1
                 probabilities.append(probability)
                 sentence_scores.append({
                     "sentence_id": sentence["sentence_id"],
-                    "reorientation_percentile": probability,
+                    "progress_probability": probability,
                     "predicted_progress": bool(probability >= threshold),
+                    "features": feature_values,
                 })
             else:
                 probabilities.append(None)
@@ -298,25 +423,17 @@ def main() -> None:
             "domain": trace["domain"],
             "split": trace["split"],
             "source": PSEUDO_SOURCE,
-            "detector_variant": variant,
             "detector_threshold": threshold,
             "annotations": annotations,
         }
         score_records.append({
             "trace_id": trace_id,
-            "variant": variant,
             "threshold": threshold,
             "sentences": sentence_scores,
         })
         pseudo_count += 1
-    order = {str(trace["trace_id"]): index for index, trace in enumerate(traces)}
-    records = sorted(output.values(), key=lambda row: order.get(str(row["trace_id"]), 10**9))
-    atomic_write_jsonl(
-        paths["tables"] / "sentence_annotations_strong_seed.jsonl",
-        sorted(
-            seeds.values(),
-            key=lambda row: order.get(str(row["trace_id"]), 10**9),
-        ),
+    records = sorted(
+        output.values(), key=lambda row: order.get(str(row["trace_id"]), 10**9)
     )
     atomic_write_jsonl(paths["tables"] / "sentence_annotations.jsonl", records)
     atomic_write_jsonl(
@@ -324,9 +441,9 @@ def main() -> None:
     )
     print(json.dumps(calibration, indent=2), flush=True)
     print(
-        f"Preserved {len(seeds)} strong trajectories and added {pseudo_count} "
-        "attention-labeled training trajectories. Validation/test remain strong-only.",
-        flush=True,
+        f"Validation gate passed. Preserved {len(seeds)} strong trajectories "
+        f"and added {pseudo_count} burst-labeled training trajectories. "
+        "Validation/test remain strong-only.", flush=True,
     )
 
 

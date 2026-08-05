@@ -34,7 +34,10 @@ def rebuild_partial_annotations(config: dict, paths: dict[str, Path]) -> None:
     if table.exists():
         current = read_jsonl(table)
         if any(
-            row.get("source") == "attention_reorientation_pseudo_labeler"
+            row.get("source") in {
+                "attention_reorientation_pseudo_labeler",
+                "attention_burst_pseudo_labeler",
+            }
             for row in current
         ):
             # The attention labeler has already validated and merged strong
@@ -100,6 +103,7 @@ def coverage_report(
             source in {
                 "modernbert_sequential_event_tagger",
                 "attention_reorientation_pseudo_labeler",
+                "attention_burst_pseudo_labeler",
             }
             for source in source_counts
         ),

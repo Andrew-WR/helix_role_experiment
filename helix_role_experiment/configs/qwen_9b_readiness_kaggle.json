@@ -96,14 +96,15 @@
     "selector_fraction_steps": 7
   },
   "attention_reorientation": {
-    "target_precision": 0.5,
-    "minimum_threshold": 0.5,
+    "target_precision": 0.25,
+    "minimum_threshold": 0.05,
     "review_margin": 0.05,
-    "variants": [
-      "all_head_median",
-      "all_head_upper_quartile",
-      "receiver_head_median"
-    ]
+    "echo_horizon": 3,
+    "ridge": 1.0,
+    "minimum_validation_precision": 0.13,
+    "minimum_validation_recall": 0.25,
+    "minimum_validation_lift": 2.0,
+    "require_validation_gate": true
   },
   "event_tagger": {
     "model_id": "answerdotai/ModernBERT-base",

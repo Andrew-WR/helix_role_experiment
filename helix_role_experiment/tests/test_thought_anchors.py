@@ -4,6 +4,7 @@ import numpy as np
 
 from helix_role_experiment.thought_anchors import (
     attention_reorientation_scores,
+    attention_burst_features,
     attended_anchor_flags,
     calibrate_anchor_selector,
     combined_anchor_scores,
@@ -23,6 +24,23 @@ class ThoughtAnchorTests(unittest.TestCase):
         scores = attention_reorientation_scores(attention, "median")
         self.assertTrue(np.isnan(scores[1]))
         self.assertGreater(scores[3], 0.0)
+
+    def test_attention_burst_features_capture_recent_use_and_echo(self):
+        attention = np.zeros((2, 6, 6), dtype=float)
+        for head in range(2):
+            attention[head, 2, :2] = [0.2, 0.8]
+            attention[head, 3, :3] = [0.1, 0.2, 0.7]
+            attention[head, 4, :4] = [0.1, 0.1, 0.7, 0.1]
+        features = attention_burst_features(attention, echo_horizon=2)
+        self.assertGreater(features["recent_one"][3], 0.5)
+        self.assertGreater(features["local_echo"][2], 0.5)
+        self.assertEqual(
+            set(features),
+            {
+                "stability", "recent_one", "recent_two", "local_echo",
+                "transition_then_stabilization",
+            },
+        )
 
     def test_vertical_scores_ignore_nearby_sentences(self):
         matrix = np.zeros((7, 7), dtype=float)
