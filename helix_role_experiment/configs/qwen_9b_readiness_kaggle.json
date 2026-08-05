@@ -88,7 +88,12 @@
     "query_tokens_per_sentence": 4,
     "query_chunk_size": 32,
     "teacher_force_chunk_tokens": 256,
-    "minimum_teacher_force_chunk_tokens": 64
+    "minimum_teacher_force_chunk_tokens": 64,
+    "label_guided_selection": true,
+    "minimum_final_anchor_fraction": 0.05,
+    "maximum_final_anchor_fraction": 0.2,
+    "selector_weight_steps": 11,
+    "selector_fraction_steps": 7
   },
   "event_tagger": {
     "model_id": "answerdotai/ModernBERT-base",

@@ -23,6 +23,8 @@ from helix_role_experiment.models import huggingface_collector_from_config
 from helix_role_experiment.reasoning_benchmarks import ReadinessTask, readiness_prompt
 from helix_role_experiment.thought_anchors import (
     attended_anchor_flags,
+    calibrate_anchor_selector,
+    combined_anchor_scores,
     forward_anchor_overlap,
     receiver_head_statistics,
     top_fraction_flags,
@@ -54,6 +56,11 @@ def settings(config: dict[str, Any]) -> dict[str, Any]:
         "query_chunk_size": 32,
         "teacher_force_chunk_tokens": 256,
         "minimum_teacher_force_chunk_tokens": 64,
+        "label_guided_selection": True,
+        "minimum_final_anchor_fraction": 0.05,
+        "maximum_final_anchor_fraction": 0.20,
+        "selector_weight_steps": 11,
+        "selector_fraction_steps": 7,
     }
     values.update(config.get("thought_anchors", {}))
     return values
@@ -525,6 +532,98 @@ def select_receiver_heads(
     return ranked[:min(top_k, len(ranked))]
 
 
+def apply_label_guided_anchor_budget(
+    records: list[dict[str, Any]], annotations: list[dict[str, Any]],
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    annotation_by_trace = {
+        str(record["trace_id"]): record
+        for record in annotations
+        if record.get("source") != "modernbert_sequential_event_tagger"
+    }
+    examples = []
+    positive_labels = {"forward_progress", "productive_backtrack"}
+    for record in records:
+        if record["split"] != "train":
+            continue
+        annotation = annotation_by_trace.get(str(record["trace_id"]))
+        if annotation is None:
+            continue
+        labels = {
+            str(row["sentence_id"]): str(row["primary_label"])
+            for row in annotation["annotations"]
+        }
+        rows = record["sentences"]
+        if any(str(row["sentence_id"]) not in labels for row in rows):
+            continue
+        receiver = np.asarray([
+            np.nan if row["within_trace_percentile"] is None
+            else row["within_trace_percentile"] for row in rows
+        ], dtype=np.float64)
+        ancestor = np.asarray([
+            np.nan if row["anchor_of_anchor_percentile"] is None
+            else row["anchor_of_anchor_percentile"]
+            for row in rows
+        ], dtype=np.float64)
+        truth = np.asarray([
+            labels[str(row["sentence_id"])] in positive_labels for row in rows
+        ], dtype=bool)
+        examples.append((receiver, ancestor, truth))
+    if bool(values["label_guided_selection"]):
+        selector = calibrate_anchor_selector(
+            examples,
+            float(values["minimum_final_anchor_fraction"]),
+            float(values["maximum_final_anchor_fraction"]),
+            int(values["selector_weight_steps"]),
+            int(values["selector_fraction_steps"]),
+        )
+        selector["mode"] = "train_labels_forward_or_productive_backtrack"
+        selector["calibration_trajectory_count"] = len(examples)
+    else:
+        selector = {
+            "mode": "fixed_unsupervised",
+            "receiver_weight": 0.5,
+            "final_anchor_fraction": min(
+                float(values["maximum_final_anchor_fraction"]),
+                max(
+                    float(values["minimum_final_anchor_fraction"]),
+                    float(values["anchor_fraction"]),
+                ),
+            ),
+            "calibration_trajectory_count": 0,
+        }
+    weight = float(selector["receiver_weight"])
+    fraction = float(selector["final_anchor_fraction"])
+    for record in records:
+        rows = record["sentences"]
+        receiver = np.asarray([
+            np.nan if row["within_trace_percentile"] is None
+            else row["within_trace_percentile"] for row in rows
+        ], dtype=np.float64)
+        ancestor = np.asarray([
+            np.nan if row["anchor_of_anchor_percentile"] is None
+            else row["anchor_of_anchor_percentile"]
+            for row in rows
+        ], dtype=np.float64)
+        combined = combined_anchor_scores(receiver, ancestor, weight)
+        final_flags, final_percentiles = top_fraction_flags(combined, fraction)
+        for index, row in enumerate(rows):
+            row["combined_anchor_score"] = (
+                float(combined[index]) if np.isfinite(combined[index]) else None
+            )
+            row["combined_anchor_percentile"] = (
+                float(final_percentiles[index])
+                if np.isfinite(final_percentiles[index]) else None
+            )
+            row["anchor_of_anchor"] = bool(
+                row["anchor_of_anchor_candidate"] and final_flags[index]
+            )
+            row["thought_anchor"] = bool(final_flags[index])
+        record["final_anchor_fraction"] = fraction
+        record["selector_receiver_weight"] = weight
+    return selector
+
+
 def finalize(config: dict[str, Any], paths: dict[str, Path]) -> None:
     values = settings(config)
     artifacts = []
@@ -592,7 +691,7 @@ def finalize(config: dict[str, Any], paths: dict[str, Path]) -> None:
                         if np.isfinite(percentiles[index]) else None
                     ),
                     "primary_thought_anchor": bool(primary_flags[index]),
-                    "anchor_of_anchor": bool(ancestor_flags[index]),
+                    "anchor_of_anchor_candidate": bool(ancestor_flags[index]),
                     "anchor_of_anchor_attention": (
                         float(ancestor_scores[index])
                         if np.isfinite(ancestor_scores[index]) else None
@@ -606,6 +705,9 @@ def finalize(config: dict[str, Any], paths: dict[str, Path]) -> None:
                 for index, sentence_id in enumerate(sentence_ids)
             ],
         })
+    annotation_path = paths["tables"] / "sentence_annotations.jsonl"
+    annotations = read_jsonl(annotation_path) if annotation_path.exists() else []
+    selector = apply_label_guided_anchor_budget(records, annotations, values)
     write_jsonl(paths["tables"] / "thought_anchor_sentences.jsonl", records)
     atomic_json(paths["tables"] / "thought_anchor_receiver_heads.json", {
         "selection_split": "train", "top_k": len(heads),
@@ -615,10 +717,9 @@ def finalize(config: dict[str, Any], paths: dict[str, Path]) -> None:
             "All key tokens are used. Query-token averaging is approximated by "
             "evenly sampled tokens per sentence to bound T4 memory and runtime."
         ),
+        "selector": selector,
         "heads": heads,
     })
-    annotation_path = paths["tables"] / "sentence_annotations.jsonl"
-    annotations = read_jsonl(annotation_path) if annotation_path.exists() else []
     anchors_by_trace = {
         str(record["trace_id"]): {
             str(row["sentence_id"]): row for row in record["sentences"]
@@ -658,7 +759,9 @@ def finalize(config: dict[str, Any], paths: dict[str, Path]) -> None:
             merged,
         )
     overlap = forward_anchor_overlap(records, annotations)
-    overlap["anchor_fraction"] = fraction
+    overlap["primary_anchor_fraction"] = fraction
+    overlap["anchor_fraction"] = float(selector["final_anchor_fraction"])
+    overlap["selector"] = selector
     overlap["labeled_trajectory_count"] = len({
         row["trace_id"] for row in annotations
         if row.get("source") != "modernbert_sequential_event_tagger"

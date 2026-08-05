@@ -24,6 +24,8 @@ class ThoughtAnchorScriptTests(unittest.TestCase):
         self.assertEqual(values["query_chunk_size"], 32)
         self.assertEqual(values["teacher_force_chunk_tokens"], 256)
         self.assertEqual(values["minimum_teacher_force_chunk_tokens"], 64)
+        self.assertTrue(values["label_guided_selection"])
+        self.assertEqual(values["maximum_final_anchor_fraction"], 0.2)
 
     def test_query_sampling_covers_every_sentence(self):
         owners = np.asarray([-1, 0, 0, 0, 1, 1, 2, 2, 2, 2])
@@ -82,6 +84,45 @@ class ThoughtAnchorScriptTests(unittest.TestCase):
             )
             self.assertTrue(COLLECTOR.valid_artifact(path, trace, 1))
             self.assertTrue(COLLECTOR.valid_artifact(path, trace, 4))
+
+    def test_label_guided_budget_is_fitted_on_train_and_capped(self):
+        def record(trace_id, split):
+            return {
+                "trace_id": trace_id,
+                "split": split,
+                "sentences": [
+                    {
+                        "sentence_id": f"s{i}",
+                        "within_trace_percentile": i / 19,
+                        "anchor_of_anchor_percentile": (19 - i) / 19,
+                        "anchor_of_anchor_candidate": i < 5,
+                    }
+                    for i in range(20)
+                ],
+            }
+
+        records = [record("train", "train"), record("val", "val")]
+        annotations = [{
+            "trace_id": "train",
+            "source": "human",
+            "annotations": [
+                {
+                    "sentence_id": f"s{i}",
+                    "primary_label": (
+                        "forward_progress" if i < 4 else "neutral_support"
+                    ),
+                }
+                for i in range(20)
+            ],
+        }]
+        selector = COLLECTOR.apply_label_guided_anchor_budget(
+            records, annotations, COLLECTOR.settings({})
+        )
+        self.assertEqual(selector["calibration_trajectory_count"], 1)
+        for local in records:
+            self.assertLessEqual(
+                sum(row["thought_anchor"] for row in local["sentences"]), 4
+            )
 
 
 if __name__ == "__main__":

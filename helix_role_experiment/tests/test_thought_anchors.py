@@ -4,6 +4,8 @@ import numpy as np
 
 from helix_role_experiment.thought_anchors import (
     attended_anchor_flags,
+    calibrate_anchor_selector,
+    combined_anchor_scores,
     excess_kurtosis,
     forward_anchor_overlap,
     receiver_head_statistics,
@@ -55,6 +57,29 @@ class ThoughtAnchorTests(unittest.TestCase):
         flags, _, _ = attended_anchor_flags(attention, primary, fraction=0.25)
         self.assertTrue(flags[2])
         self.assertFalse(flags[0])
+
+    def test_combined_scores_keep_unscored_sentences_excluded(self):
+        scores = combined_anchor_scores(
+            np.asarray([0.2, np.nan, 0.8]),
+            np.asarray([0.9, 1.0, np.nan]),
+            receiver_weight=0.5,
+        )
+        self.assertAlmostEqual(scores[0], 0.55)
+        self.assertTrue(np.isnan(scores[1]))
+        self.assertAlmostEqual(scores[2], 0.4)
+
+    def test_label_calibration_respects_fraction_cap(self):
+        receiver = np.linspace(0.0, 1.0, 20)
+        ancestor = receiver[::-1]
+        labels = np.zeros(20, dtype=bool)
+        labels[:4] = True
+        selector = calibrate_anchor_selector(
+            [(receiver, ancestor, labels)],
+            minimum_fraction=0.05,
+            maximum_fraction=0.20,
+        )
+        self.assertLessEqual(selector["final_anchor_fraction"], 0.20)
+        self.assertEqual(selector["receiver_weight"], 0.0)
 
     def test_spiky_values_have_positive_excess_kurtosis(self):
         self.assertGreater(excess_kurtosis(np.asarray([0] * 20 + [10])), 0)

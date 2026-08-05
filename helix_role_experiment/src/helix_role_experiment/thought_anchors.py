@@ -250,11 +250,7 @@ def attended_anchor_flags(
             local_percentiles = (
                 np.arange(len(order), dtype=np.float64) / (len(order) - 1)
             )
-        count = max(1, int(math.ceil(len(order) * fraction)))
-        chosen = order[-count:]
-        chosen_percentiles = local_percentiles[-count:]
-        flags[chosen] = True
-        for sentence_index, percentile in zip(chosen, chosen_percentiles):
+        for sentence_index, percentile in zip(order, local_percentiles):
             score = values[query_index, sentence_index]
             if (
                 not np.isfinite(percentiles[sentence_index])
@@ -263,7 +259,87 @@ def attended_anchor_flags(
                 percentiles[sentence_index] = percentile
             if not np.isfinite(scores[sentence_index]) or score > scores[sentence_index]:
                 scores[sentence_index] = score
+        count = max(1, int(math.ceil(len(order) * fraction)))
+        chosen = order[-count:]
+        flags[chosen] = True
     return flags, percentiles, scores
+
+
+def combined_anchor_scores(
+    receiver_percentiles: np.ndarray,
+    ancestor_percentiles: np.ndarray,
+    receiver_weight: float,
+) -> np.ndarray:
+    """Blend receiver and ancestor ranks on the receiver-score support."""
+    if not 0 <= receiver_weight <= 1:
+        raise ValueError("receiver weight must be in [0, 1]")
+    receiver = np.asarray(receiver_percentiles, dtype=np.float64)
+    ancestor = np.asarray(ancestor_percentiles, dtype=np.float64)
+    if receiver.shape != ancestor.shape:
+        raise ValueError("receiver and ancestor percentiles must have equal shape")
+    valid = np.isfinite(receiver)
+    result = np.full(receiver.shape, np.nan, dtype=np.float64)
+    result[valid] = (
+        receiver_weight * receiver[valid]
+        + (1.0 - receiver_weight)
+        * np.nan_to_num(ancestor[valid], nan=0.0)
+    )
+    return result
+
+
+def calibrate_anchor_selector(
+    examples: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    minimum_fraction: float,
+    maximum_fraction: float,
+    weight_steps: int = 11,
+    fraction_steps: int = 7,
+) -> dict[str, float | int]:
+    """Tune a bounded selector using only supplied labeled train examples."""
+    if not examples:
+        raise ValueError("anchor calibration requires labeled train examples")
+    if not 0 < minimum_fraction <= maximum_fraction < 1:
+        raise ValueError("invalid final anchor fraction bounds")
+    if weight_steps < 2 or fraction_steps < 2:
+        raise ValueError("selector grids require at least two steps")
+    best: dict[str, float | int] | None = None
+    for weight in np.linspace(0.0, 1.0, weight_steps):
+        for fraction in np.linspace(
+            minimum_fraction, maximum_fraction, fraction_steps
+        ):
+            tp = fp = fn = 0
+            for receiver, ancestor, labels in examples:
+                scores = combined_anchor_scores(receiver, ancestor, float(weight))
+                predictions, _ = top_fraction_flags(scores, float(fraction))
+                truth = np.asarray(labels, dtype=bool)
+                tp += int(np.sum(predictions & truth))
+                fp += int(np.sum(predictions & ~truth))
+                fn += int(np.sum(~predictions & truth))
+            precision = tp / (tp + fp) if tp + fp else 0.0
+            recall = tp / (tp + fn) if tp + fn else 0.0
+            f1 = (
+                2.0 * precision * recall / (precision + recall)
+                if precision + recall else 0.0
+            )
+            candidate: dict[str, float | int] = {
+                "receiver_weight": float(weight),
+                "final_anchor_fraction": float(fraction),
+                "train_precision": float(precision),
+                "train_recall": float(recall),
+                "train_f1": float(f1),
+                "train_tp": tp,
+                "train_fp": fp,
+                "train_fn": fn,
+            }
+            key = (f1, precision, -float(fraction))
+            best_key = (
+                float(best["train_f1"]),
+                float(best["train_precision"]),
+                -float(best["final_anchor_fraction"]),
+            ) if best is not None else None
+            if best_key is None or key > best_key:
+                best = candidate
+    assert best is not None
+    return best
 
 
 def forward_anchor_overlap(
@@ -281,6 +357,7 @@ def forward_anchor_overlap(
         "backtrack_and_anchor": 0,
     }
     by_source: dict[str, dict[str, int]] = {}
+    by_split: dict[str, dict[str, int]] = {}
     for anchor_record in anchor_records:
         annotation_record = annotations.get(str(anchor_record["trace_id"]))
         if annotation_record is None:
@@ -288,6 +365,8 @@ def forward_anchor_overlap(
         rows = annotation_record["annotations"]
         source = str(annotation_record.get("source", "unknown"))
         local = by_source.setdefault(source, {key: 0 for key in totals})
+        split = str(anchor_record.get("split", "unknown"))
+        local_split = by_split.setdefault(split, {key: 0 for key in totals})
         index = {str(row["sentence_id"]): row for row in rows}
         for anchor in anchor_record["sentences"]:
             annotation = index.get(str(anchor["sentence_id"]))
@@ -312,6 +391,7 @@ def forward_anchor_overlap(
             for key, value in increments.items():
                 totals[key] += value
                 local[key] += value
+                local_split[key] += value
 
     def rates(counts: dict[str, int]) -> dict[str, Any]:
         forward = counts["forward_progress"]
@@ -333,10 +413,12 @@ def forward_anchor_overlap(
 
     return {
         "definition": (
-            "Thought anchors are the union of primary receiver-score anchors "
-            "and the one-hop top-fraction prior sentences each primary anchor "
-            "attends to. LLM rows exclude ModernBERT pseudo-labels."
+            "Thought anchors are selected under a bounded per-trajectory budget "
+            "from receiver-score and one-hop ancestor-attention ranks. The "
+            "selector is calibrated only on labeled training trajectories. "
+            "LLM rows exclude ModernBERT pseudo-labels."
         ),
         "overall": rates(totals),
         "by_llm_source": {key: rates(value) for key, value in by_source.items()},
+        "by_split": {key: rates(value) for key, value in by_split.items()},
     }
