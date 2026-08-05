@@ -118,6 +118,48 @@ deployment throttles. To halve calls, set `inkling_labeling.audit_passes` to
 zero; the default of one is preferred for annotation quality. Existing valid
 labels are preserved, including the original 15 trajectories.
 
+### Independent mechanistic labels: Thought Anchors
+
+`07a` did **not** persist attention matrices; its NPZ shards contain only
+sentence-boundary residual activations. The saved text is sufficient to recover
+receiver-head scores without regenerating any trajectory. The post-hoc
+collector reconstructs the original chat prompt, teacher-forces the saved
+response, and uses a custom SDPA-compatible attention backend to aggregate
+attention directly into sentence matrices.
+
+The implementation follows the receiver-head analysis from *Thought Anchors*:
+it ignores connections fewer than four sentences apart, rank-normalizes each
+downstream sentence to control for depth, selects the 16 heads with the highest
+median kurtosis on **train traces only**, and averages their vertical-attention
+scores. To fit two T4s, all key tokens are retained while four evenly spaced
+query tokens per sentence approximate the paper's all-token sentence average.
+Increase `thought_anchors.query_tokens_per_sentence` for a closer but slower
+replication.
+
+```bash
+# Uses one Qwen replica on each T4 and resumes from per-trace NPZ files.
+python scripts/07b_collect_thought_anchors.py \
+  --config configs/qwen_9b_readiness_kaggle.json collect
+
+python scripts/07b_collect_thought_anchors.py \
+  --config configs/qwen_9b_readiness_kaggle.json finalize
+```
+
+Run `collect --limit 2` first as a GPU compatibility and memory smoke test.
+`finalize` defines anchors as the top 10% of finite receiver scores within each
+trace; this binary cutoff is an experiment convention because the paper's
+receiver score is continuous. It writes:
+
+- `tables/thought_anchor_sentences.jsonl`: independent scores and anchor flags.
+- `tables/thought_anchor_receiver_heads.json`: frozen train-selected heads.
+- `tables/thought_anchor_forward_overlap.json`: the percentage of LLM
+  `forward_progress` sentences that are anchors, the reverse percentage, and
+  productive-backtrack overlap, overall and by label source. ModernBERT
+  pseudo-labels are excluded from this comparison.
+- `tables/sentence_annotations_with_thought_anchors.jsonl`: non-destructive
+  merged labels for analysis. Thought anchors are not substituted for forward
+  progress: they measure downstream attentional importance, not correctness.
+
 ### Local fallback: sequential ModernBERT
 
 The preferred replacement for hosted or generative-LLM labeling is the

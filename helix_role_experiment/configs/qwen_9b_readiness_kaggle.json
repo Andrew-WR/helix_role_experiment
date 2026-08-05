@@ -81,6 +81,13 @@
     "max_tokens": 2048,
     "reasoning_effort": "none"
   },
+  "thought_anchors": {
+    "top_k_heads": 16,
+    "proximity_ignore": 4,
+    "anchor_fraction": 0.1,
+    "query_tokens_per_sentence": 4,
+    "query_chunk_size": 32
+  },
   "event_tagger": {
     "model_id": "answerdotai/ModernBERT-base",
     "max_length": 2048,
