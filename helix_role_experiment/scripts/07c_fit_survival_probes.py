@@ -30,6 +30,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def rebuild_partial_annotations(config: dict, paths: dict[str, Path]) -> None:
+    table = paths["tables"] / "sentence_annotations.jsonl"
+    if table.exists():
+        current = read_jsonl(table)
+        if any(
+            row.get("source") == "attention_reorientation_pseudo_labeler"
+            for row in current
+        ):
+            # The attention labeler has already validated and merged strong
+            # labels. Rebuilding from LLM caches would silently discard its
+            # training-only pseudo-labels.
+            return
     source = Path(__file__).resolve().parent / "07b_label_subgoal_events.py"
     spec = importlib.util.spec_from_file_location("label_subgoal_events_07b_for_07c", source)
     labeler = importlib.util.module_from_spec(spec)
@@ -86,7 +97,10 @@ def coverage_report(
         "reasoning_sentences_needing_review": reasoning_needs_review,
         "trajectory_label_source_counts": source_counts,
         "pseudo_label_evaluation_warning": any(
-            source == "modernbert_sequential_event_tagger"
+            source in {
+                "modernbert_sequential_event_tagger",
+                "attention_reorientation_pseudo_labeler",
+            }
             for source in source_counts
         ),
     }

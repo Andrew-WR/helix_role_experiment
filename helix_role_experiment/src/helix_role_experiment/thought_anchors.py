@@ -23,6 +23,46 @@ def categorical_js_divergence(p: np.ndarray, q: np.ndarray) -> float:
     return 0.5 * kl(left, midpoint) + 0.5 * kl(right, midpoint)
 
 
+def attention_reorientation_scores(
+    sentence_attention: np.ndarray,
+    aggregation: str = "median",
+) -> np.ndarray:
+    """Measure query-row redistribution at each sentence boundary.
+
+    Input is ``[heads, query_sentence, key_sentence]``. Sentence ``i`` and
+    sentence ``i-1`` are compared only over their shared causal history
+    ``[:i-1]`` so the score is not merely attention to the immediately previous
+    sentence. Scores for the first two sentences are undefined.
+    """
+    values = np.asarray(sentence_attention, dtype=np.float64)
+    if values.ndim != 3 or values.shape[-1] != values.shape[-2]:
+        raise ValueError(
+            "sentence attention must be [heads, sentences, sentences]"
+        )
+    if aggregation not in {"median", "upper_quartile"}:
+        raise ValueError("aggregation must be median or upper_quartile")
+    scores = np.full(values.shape[-1], np.nan, dtype=np.float64)
+    for sentence_index in range(2, values.shape[-1]):
+        current = values[:, sentence_index, :sentence_index - 1]
+        previous = values[:, sentence_index - 1, :sentence_index - 1]
+        divergences = []
+        for left, right in zip(current, previous):
+            finite = np.isfinite(left) & np.isfinite(right)
+            if not finite.any():
+                continue
+            left_values = np.maximum(left[finite], 0.0)
+            right_values = np.maximum(right[finite], 0.0)
+            if left_values.sum() <= 0 or right_values.sum() <= 0:
+                continue
+            divergences.append(
+                categorical_js_divergence(left_values, right_values)
+            )
+        if divergences:
+            quantile = 0.5 if aggregation == "median" else 0.75
+            scores[sentence_index] = float(np.quantile(divergences, quantile))
+    return scores
+
+
 @dataclass
 class SentenceCounterfactual:
     sentence_index: int

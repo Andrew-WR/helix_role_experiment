@@ -95,6 +95,16 @@
     "selector_weight_steps": 11,
     "selector_fraction_steps": 7
   },
+  "attention_reorientation": {
+    "target_precision": 0.5,
+    "minimum_threshold": 0.5,
+    "review_margin": 0.05,
+    "variants": [
+      "all_head_median",
+      "all_head_upper_quartile",
+      "receiver_head_median"
+    ]
+  },
   "event_tagger": {
     "model_id": "answerdotai/ModernBERT-base",
     "max_length": 2048,

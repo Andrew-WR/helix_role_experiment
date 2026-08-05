@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from helix_role_experiment.thought_anchors import (
+    attention_reorientation_scores,
     attended_anchor_flags,
     calibrate_anchor_selector,
     combined_anchor_scores,
@@ -15,6 +16,14 @@ from helix_role_experiment.thought_anchors import (
 
 
 class ThoughtAnchorTests(unittest.TestCase):
+    def test_attention_reorientation_detects_query_redistribution(self):
+        attention = np.zeros((2, 5, 5), dtype=float)
+        attention[:, 2, :2] = [0.9, 0.1]
+        attention[:, 3, :2] = [0.1, 0.9]
+        scores = attention_reorientation_scores(attention, "median")
+        self.assertTrue(np.isnan(scores[1]))
+        self.assertGreater(scores[3], 0.0)
+
     def test_vertical_scores_ignore_nearby_sentences(self):
         matrix = np.zeros((7, 7), dtype=float)
         matrix[4:, 0] = 10.0
