@@ -16,6 +16,23 @@ SPEC.loader.exec_module(EVALUATOR)
 
 
 class HumanEvalSubsetEvaluatorTests(unittest.TestCase):
+    def test_changed_evaluator_input_invalidates_old_results(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "humaneval_gated.jsonl"
+            EVALUATOR.atomic_evaluator_input(
+                source, [{"task_id": "HumanEval/0", "completion": "old"}]
+            )
+            results = Path(str(source) + "_results.jsonl")
+            results.write_text("{}\n", encoding="utf-8")
+            EVALUATOR.atomic_evaluator_input(
+                source, [{"task_id": "HumanEval/0", "completion": "old"}]
+            )
+            self.assertTrue(results.exists())
+            EVALUATOR.atomic_evaluator_input(
+                source, [{"task_id": "HumanEval/0", "completion": "new"}]
+            )
+            self.assertFalse(results.exists())
+
     def test_program_combines_prompt_completion_tests_and_entry_point(self):
         task = {
             "prompt": "def add(a, b):\n",

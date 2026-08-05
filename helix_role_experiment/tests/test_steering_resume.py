@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 
@@ -22,9 +23,17 @@ class SteeringResumeTests(unittest.TestCase):
             second_id, second = STEERING.steering_destination(root, "task-1", "gated", 7)
             self.assertEqual(first_id, second_id)
             self.assertEqual(first, second)
-            first.write_text("{}", encoding="utf-8")
+            first.write_text(
+                json.dumps({"steering_run_fingerprint": "new-probe"}),
+                encoding="utf-8",
+            )
             missing = root / "missing.json"
-            self.assertEqual(STEERING.completed_expected([first, missing]), 1)
+            self.assertEqual(
+                STEERING.completed_expected([first, missing], "new-probe"), 1
+            )
+            self.assertEqual(
+                STEERING.completed_expected([first, missing], "old-probe"), 0
+            )
 
 
 if __name__ == "__main__":

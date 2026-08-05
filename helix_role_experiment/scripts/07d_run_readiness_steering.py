@@ -12,14 +12,16 @@ from helix_role_experiment.config import atomic_json, deterministic_id, ensure_o
 from helix_role_experiment.models import huggingface_collector_from_config
 from helix_role_experiment.readiness import ExponentialProbe, SentenceSteeringController
 from helix_role_experiment.reasoning_benchmarks import ReadinessTask, extract_humaneval_completion, readiness_prompt
+from helix_role_experiment.steering_artifacts import (
+    READINESS_STOP_REGEX,
+    steering_run_identity,
+    valid_steering_artifact,
+)
 
 from _common import write_csv
 
 
-STOP_REGEX = (
-    r"(?is)</think>\s*(?:FINAL:\s*\S[^\r\n]*(?:\r?\n|<\|im_end\|>)|"
-    r"FINAL_CODE:\s*```(?:python|py)?.*?```)"
-)
+STOP_REGEX = READINESS_STOP_REGEX
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,8 +40,8 @@ def steering_destination(
     return trace_id, output_dir / f"{trace_id}.json"
 
 
-def completed_expected(paths: list[Path]) -> int:
-    return sum(path.exists() for path in paths)
+def completed_expected(paths: list[Path], fingerprint: str) -> int:
+    return sum(valid_steering_artifact(path, fingerprint) for path in paths)
 
 
 def worker(args: argparse.Namespace, config: dict, paths: dict[str, Path]) -> None:
@@ -51,6 +53,9 @@ def worker(args: argparse.Namespace, config: dict, paths: dict[str, Path]) -> No
     output_dir = paths["traces"] / "readiness_steering"
     output_dir.mkdir(parents=True, exist_ok=True)
     seed_base = int(config["study"]["seed"])
+    probe_path = paths["models"] / "readiness_survival_probe.npz"
+    identity = steering_run_identity(config, probe_path, STOP_REGEX)
+    fingerprint = str(identity["steering_run_fingerprint"])
     global_expected = [
         steering_destination(output_dir, row["task_id"], condition, seed_base)[1]
         for condition in conditions for row in all_rows
@@ -59,22 +64,34 @@ def worker(args: argparse.Namespace, config: dict, paths: dict[str, Path]) -> No
         steering_destination(output_dir, row["task_id"], condition, seed_base)[1]
         for condition in conditions for row in rows
     ]
-    shard_completed = completed_expected(shard_expected)
+    shard_completed = completed_expected(shard_expected, fingerprint)
+    shard_existing = sum(path.exists() for path in shard_expected)
+    shard_stale = shard_existing - shard_completed
     print(
         f"[GPU {args.shard_index}] progress {shard_completed}/{len(shard_expected)} "
-        f"on this shard; global {completed_expected(global_expected)}/"
-        f"{len(global_expected)} already saved.",
+        f"compatible on this shard; global "
+        f"{completed_expected(global_expected, fingerprint)}/"
+        f"{len(global_expected)} compatible. "
+        f"{shard_stale} stale shard artifacts will be regenerated.",
         flush=True,
     )
+    if shard_completed == len(shard_expected):
+        atomic_json(paths["logs"] / f"07d_worker_{args.shard_index}.json", {
+            "assigned": len(rows),
+            "conditions": conditions,
+            "steering_run_fingerprint": fingerprint,
+            "all_compatible": True,
+        })
+        return
     backend = huggingface_collector_from_config(config["model"], config["collection"])
-    probe = ExponentialProbe.load(paths["models"] / "readiness_survival_probe.npz")
+    probe = ExponentialProbe.load(probe_path)
     for condition in conditions:
         pending = []
         for row in rows:
             trace_id, destination = steering_destination(
                 output_dir, row["task_id"], condition, seed_base
             )
-            if not destination.exists():
+            if not valid_steering_artifact(destination, fingerprint):
                 pending.append((trace_id, row, destination))
         for start in range(0, len(pending), batch_size):
             chunk = pending[start : start + batch_size]
@@ -114,6 +131,9 @@ def worker(args: argparse.Namespace, config: dict, paths: dict[str, Path]) -> No
                     ),
                     "trigger_count": controller.trigger_count,
                     "steered_steps": controller.steered_steps, "readiness_scores": controller.scores,
+                    "steering_run_fingerprint": fingerprint,
+                    "probe_sha256": identity["probe_sha256"],
+                    "fingerprint_version": identity["fingerprint_version"],
                     "mean_eos_logit": sum(generation.eos_logits) / max(len(generation.eos_logits), 1),
                     "mean_token_entropy": (
                         sum(generation.token_entropies) / len(generation.token_entropies)
@@ -124,16 +144,25 @@ def worker(args: argparse.Namespace, config: dict, paths: dict[str, Path]) -> No
                 print(
                     f"[GPU {args.shard_index}] [{shard_completed}/"
                     f"{len(shard_expected)} shard; "
-                    f"{completed_expected(global_expected)}/"
+                    f"{completed_expected(global_expected, fingerprint)}/"
                     f"{len(global_expected)} global] saved {condition} "
                     f"{row['task_id']} ({len(generation.token_ids)} tokens)",
                     flush=True,
                 )
-    atomic_json(paths["logs"] / f"07d_worker_{args.shard_index}.json", {"assigned": len(rows), "conditions": conditions})
+    atomic_json(paths["logs"] / f"07d_worker_{args.shard_index}.json", {
+        "assigned": len(rows),
+        "conditions": conditions,
+        "steering_run_fingerprint": fingerprint,
+        "all_compatible": True,
+    })
 
 
-def export_humaneval(paths: dict[str, Path]) -> None:
-    steering = [json.loads(path.read_text(encoding="utf-8")) for path in sorted((paths["traces"] / "readiness_steering").glob("*.json"))]
+def export_humaneval(paths: dict[str, Path], fingerprint: str) -> None:
+    steering = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((paths["traces"] / "readiness_steering").glob("*.json"))
+        if valid_steering_artifact(path, fingerprint)
+    ]
     baseline = [json.loads(path.read_text(encoding="utf-8")) for path in sorted((paths["traces"] / "readiness_baseline").glob("*.json"))]
     rows = []
     for row in baseline:
@@ -145,10 +174,18 @@ def export_humaneval(paths: dict[str, Path]) -> None:
     for condition in sorted({row["condition"] for row in rows}):
         write_csv(paths["tables"] / f"humaneval_{condition}_display.csv", [row for row in rows if row["condition"] == condition])
         destination = paths["tables"] / f"humaneval_{condition}.jsonl"
-        with destination.open("w", encoding="utf-8") as handle:
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
             for row in rows:
                 if row["condition"] == condition:
                     handle.write(json.dumps({"task_id": row["task_id"], "completion": row["completion"]}, ensure_ascii=False) + "\n")
+        changed = (
+            not destination.exists()
+            or destination.read_bytes() != temporary.read_bytes()
+        )
+        temporary.replace(destination)
+        if changed:
+            Path(str(destination) + "_results.jsonl").unlink(missing_ok=True)
 
 
 def main() -> None:
@@ -159,6 +196,11 @@ def main() -> None:
     if args.worker:
         worker(args, config, paths)
         return
+    identity = steering_run_identity(
+        config, paths["models"] / "readiness_survival_probe.npz", STOP_REGEX
+    )
+    fingerprint = str(identity["steering_run_fingerprint"])
+    atomic_json(paths["logs"] / "07d_steering_run_identity.json", identity)
     processes = []
     for shard in range(2):
         environment = os.environ.copy()
@@ -185,12 +227,12 @@ def main() -> None:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
-        export_humaneval(paths)
+        export_humaneval(paths, fingerprint)
         print("Paused safely. Rerun the same command to resume.", flush=True)
         return
     if any(codes):
         raise SystemExit(f"steering workers failed: {codes}")
-    export_humaneval(paths)
+    export_humaneval(paths, fingerprint)
     print("Steering complete. HumanEval samples were exported without executing generated code.")
 
 

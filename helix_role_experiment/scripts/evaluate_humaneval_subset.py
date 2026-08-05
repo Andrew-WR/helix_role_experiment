@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from helix_role_experiment.config import ensure_output_dirs, load_config, read_jsonl
+from helix_role_experiment.steering_artifacts import (
+    READINESS_STOP_REGEX,
+    steering_run_identity,
+    valid_steering_artifact,
+)
 
 
 DEFAULT_CONDITIONS = ("baseline", "gated", "always", "random")
@@ -119,7 +124,21 @@ def atomic_jsonl(destination: Path, rows: list[dict[str, Any]]) -> None:
     temporary.replace(destination)
 
 
-def rebuild_sample_files(paths: dict[str, Path]) -> dict[str, int]:
+def atomic_evaluator_input(destination: Path, rows: list[dict[str, Any]]) -> None:
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    atomic_jsonl(temporary, rows)
+    changed = (
+        not destination.exists()
+        or destination.read_bytes() != temporary.read_bytes()
+    )
+    temporary.replace(destination)
+    if changed:
+        Path(str(destination) + "_results.jsonl").unlink(missing_ok=True)
+
+
+def rebuild_sample_files(
+    paths: dict[str, Path], fingerprint: str | None = None
+) -> dict[str, int]:
     """Derive evaluator inputs from atomic trace checkpoints without loading Qwen."""
     grouped: dict[str, list[dict[str, str]]] = {
         condition: [] for condition in DEFAULT_CONDITIONS
@@ -132,6 +151,10 @@ def rebuild_sample_files(paths: dict[str, Path]) -> dict[str, int]:
                 "completion": str(row.get("humaneval_completion") or ""),
             })
     for source in sorted((paths["traces"] / "readiness_steering").glob("*.json")):
+        if fingerprint is not None and not valid_steering_artifact(
+            source, fingerprint
+        ):
+            continue
         row = json.loads(source.read_text(encoding="utf-8"))
         condition = str(row.get("condition"))
         if row.get("domain") == "code" and condition in grouped:
@@ -144,7 +167,7 @@ def rebuild_sample_files(paths: dict[str, Path]) -> dict[str, int]:
         rows.sort(key=lambda row: row["task_id"])
         destination = paths["tables"] / f"humaneval_{condition}.jsonl"
         if rows:
-            atomic_jsonl(destination, rows)
+            atomic_evaluator_input(destination, rows)
         else:
             destination.unlink(missing_ok=True)
             Path(str(destination) + "_results.jsonl").unlink(missing_ok=True)
@@ -208,7 +231,14 @@ def main() -> None:
         if row["domain"] == "code"
     }
     conditions = tuple(args.condition or DEFAULT_CONDITIONS)
-    rebuilt = rebuild_sample_files(paths)
+    identity = steering_run_identity(
+        config,
+        paths["models"] / "readiness_survival_probe.npz",
+        READINESS_STOP_REGEX,
+    )
+    rebuilt = rebuild_sample_files(
+        paths, str(identity["steering_run_fingerprint"])
+    )
     print(f"Rebuilt HumanEval inputs from saved traces: {rebuilt}", flush=True)
     print(
         "SECURITY: this executes model-generated Python. Run only in an "
