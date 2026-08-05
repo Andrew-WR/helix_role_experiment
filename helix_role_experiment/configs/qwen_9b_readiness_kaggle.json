@@ -84,7 +84,7 @@
   "thought_anchors": {
     "top_k_heads": 16,
     "proximity_ignore": 1,
-    "anchor_fraction": 0.1,
+    "anchor_fraction": 0.2,
     "query_tokens_per_sentence": 4,
     "query_chunk_size": 32,
     "teacher_force_chunk_tokens": 256,
