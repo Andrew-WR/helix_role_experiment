@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import json
 import os
 import subprocess
@@ -50,6 +51,8 @@ def settings(config: dict[str, Any]) -> dict[str, Any]:
         "anchor_fraction": 0.10,
         "query_tokens_per_sentence": 4,
         "query_chunk_size": 32,
+        "teacher_force_chunk_tokens": 256,
+        "minimum_teacher_force_chunk_tokens": 64,
     }
     values.update(config.get("thought_anchors", {}))
     return values
@@ -127,6 +130,19 @@ class SentenceAttentionAccumulator:
         ], dtype=np.int64)
         self.sums: dict[int, np.ndarray] = {}
         self.counts: dict[int, np.ndarray] = {}
+        self.query_offset = 0
+
+    def query_window(self, query_length: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return local query indices and owners for the current cached chunk."""
+        stop = self.query_offset + int(query_length)
+        selected = (
+            (self.query_positions >= self.query_offset)
+            & (self.query_positions < stop)
+        )
+        return (
+            self.query_positions[selected] - self.query_offset,
+            self.query_owners[selected],
+        )
 
     def observe(
         self, module: Any, query: Any, key: Any, attention_mask: Any,
@@ -145,16 +161,20 @@ class SentenceAttentionAccumulator:
             (heads, self.sentence_count, self.sentence_count), dtype=np.float64
         )
         local_count = np.zeros(self.sentence_count, dtype=np.int64)
-        starts = t.as_tensor(self.key_starts, device=query.device)
-        ends = t.as_tensor(self.key_ends - 1, device=query.device)
+        available_np = np.flatnonzero(self.key_ends <= int(key.shape[-2]))
+        positions_all, owners_all = self.query_window(int(query.shape[-2]))
+        if not len(positions_all) or not len(available_np):
+            return
+        starts = t.as_tensor(self.key_starts[available_np], device=query.device)
+        ends = t.as_tensor(self.key_ends[available_np] - 1, device=query.device)
         lengths = t.as_tensor(
-            self.key_ends - self.key_starts,
+            self.key_ends[available_np] - self.key_starts[available_np],
             device=query.device, dtype=t.float32,
         )
-        for start in range(0, len(self.query_positions), self.chunk_size):
-            stop = min(start + self.chunk_size, len(self.query_positions))
-            positions_np = self.query_positions[start:stop]
-            owners_np = self.query_owners[start:stop]
+        for start in range(0, len(positions_all), self.chunk_size):
+            stop = min(start + self.chunk_size, len(positions_all))
+            positions_np = positions_all[start:stop]
+            owners_np = owners_all[start:stop]
             positions = t.as_tensor(positions_np, device=query.device)
             selected_query = query.index_select(2, positions)
             logits = t.matmul(
@@ -170,7 +190,8 @@ class SentenceAttentionAccumulator:
                     logits = logits + mask
             else:
                 keys = t.arange(key.shape[-2], device=query.device)
-                causal = keys[None, :] <= positions[:, None]
+                global_positions = positions + self.query_offset
+                causal = keys[None, :] <= global_positions[:, None]
                 logits = logits.masked_fill(
                     ~causal[None, None, :, :], float("-inf")
                 )
@@ -188,13 +209,17 @@ class SentenceAttentionAccumulator:
             for owner in np.unique(owners_np):
                 mask_np = owners_np == owner
                 owner_mask = t.as_tensor(mask_np, device=query.device)
-                local_sum[:, int(owner), :] += (
+                local_sum[:, int(owner), available_np] += (
                     key_means[:, owner_mask, :].sum(dim=1).cpu().numpy()
                 )
                 local_count[int(owner)] += int(mask_np.sum())
             del logits, probabilities, prefix, key_means
-        self.sums[layer] = local_sum
-        self.counts[layer] = local_count
+        if layer not in self.sums:
+            self.sums[layer] = local_sum
+            self.counts[layer] = local_count
+        else:
+            self.sums[layer] += local_sum
+            self.counts[layer] += local_count
 
     def matrices(self) -> tuple[np.ndarray, np.ndarray]:
         if not self.sums:
@@ -276,6 +301,88 @@ def base_text_model(model: Any) -> Any:
     raise RuntimeError("could not locate the Qwen text backbone without its LM head")
 
 
+def cached_teacher_force(
+    model: Any, inputs: dict[str, Any], accumulator: SentenceAttentionAccumulator,
+    chunk_tokens: int,
+) -> None:
+    """Run a long trace incrementally so SDPA never materializes an L x L pass."""
+    if chunk_tokens <= 0:
+        raise ValueError("teacher_force_chunk_tokens must be positive")
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs.get("attention_mask")
+    token_count = int(input_ids.shape[-1])
+    past_key_values = None
+    backbone = base_text_model(model)
+    for offset in range(0, token_count, chunk_tokens):
+        stop = min(offset + chunk_tokens, token_count)
+        accumulator.query_offset = offset
+        chunk_inputs: dict[str, Any] = {
+            "input_ids": input_ids[:, offset:stop],
+        }
+        if attention_mask is not None:
+            # Cached attention keys contain the complete prefix, so the mask must
+            # cover that same prefix even though only new input IDs are supplied.
+            chunk_inputs["attention_mask"] = attention_mask[:, :stop]
+        output = backbone(
+            **chunk_inputs,
+            past_key_values=past_key_values,
+            use_cache=True,
+            return_dict=True,
+        )
+        past_key_values = output.past_key_values
+        del output
+    del past_key_values
+
+
+def collect_matrices_with_oom_retry(
+    backend: Any, inputs: dict[str, Any], owners: np.ndarray,
+    sentence_count: int, values: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Collect once, halving the teacher-forcing chunk on a CUDA OOM."""
+    global ACTIVE_ACCUMULATOR
+    import torch
+
+    chunk_tokens = int(values["teacher_force_chunk_tokens"])
+    minimum = int(values["minimum_teacher_force_chunk_tokens"])
+    if minimum <= 0 or chunk_tokens < minimum:
+        raise ValueError(
+            "teacher_force_chunk_tokens must be >= "
+            "minimum_teacher_force_chunk_tokens > 0"
+        )
+    while True:
+        ACTIVE_ACCUMULATOR = SentenceAttentionAccumulator(
+            owners, sentence_count,
+            int(values["query_tokens_per_sentence"]),
+            int(values["query_chunk_size"]),
+        )
+        out_of_memory = False
+        try:
+            with torch.inference_mode():
+                cached_teacher_force(
+                    backend.model, inputs, ACTIVE_ACCUMULATOR, chunk_tokens
+                )
+            layers, matrices = ACTIVE_ACCUMULATOR.matrices()
+            return layers, matrices, chunk_tokens
+        except torch.OutOfMemoryError:
+            # Leave the except block before clearing CUDA: the active traceback
+            # can retain the failed chunk's cache tensors until this block exits.
+            out_of_memory = True
+        if out_of_memory:
+            ACTIVE_ACCUMULATOR = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            next_size = chunk_tokens // 2
+            if next_size < minimum:
+                raise RuntimeError(
+                    f"CUDA OOM persisted at the minimum {minimum}-token chunk"
+                )
+            print(
+                f"CUDA OOM with {chunk_tokens}-token teacher-forcing chunks; "
+                f"retrying this trace with {next_size}", flush=True,
+            )
+            chunk_tokens = next_size
+
+
 def worker(
     args: argparse.Namespace, config: dict[str, Any], paths: dict[str, Path]
 ) -> None:
@@ -309,20 +416,13 @@ def worker(
     )
     for trace, target in pending:
         encoded, owners, sentence_ids = tokenized_trace(backend, trace)
-        ACTIVE_ACCUMULATOR = SentenceAttentionAccumulator(
-            owners, len(sentence_ids),
-            int(values["query_tokens_per_sentence"]),
-            int(values["query_chunk_size"]),
-        )
         inputs = {
             key: tensor.to(backend.input_device)
             for key, tensor in encoded.items()
         }
-        with torch.inference_mode():
-            base_text_model(backend.model)(
-                **inputs, use_cache=False, return_dict=True
-            )
-        layers, matrices = ACTIVE_ACCUMULATOR.matrices()
+        layers, matrices, used_chunk_tokens = collect_matrices_with_oom_retry(
+            backend, inputs, owners, len(sentence_ids), values
+        )
         vertical, kurtosis = receiver_head_statistics(
             matrices, int(values["proximity_ignore"])
         )
@@ -335,6 +435,7 @@ def worker(
                 query_tokens_per_sentence=np.asarray(
                     [int(values["query_tokens_per_sentence"])]
                 ),
+                teacher_force_chunk_tokens=np.asarray([used_chunk_tokens]),
             )
         temporary.replace(target)
         ACTIVE_ACCUMULATOR = None
@@ -342,7 +443,8 @@ def worker(
         print(
             f"[anchor shard {args.shard_index}] {complete}/{len(sources)} "
             f"saved {trace['trace_id']}: {len(sentence_ids)} sentences, "
-            f"layers={layers.tolist()}, tokens={len(owners)}", flush=True,
+            f"layers={layers.tolist()}, tokens={len(owners)}, "
+            f"teacher_force_chunk={used_chunk_tokens}", flush=True,
         )
         torch.cuda.empty_cache()
 
@@ -493,6 +595,9 @@ def main() -> None:
     for shard in range(2):
         environment = os.environ.copy()
         environment["CUDA_VISIBLE_DEVICES"] = str(shard)
+        environment.setdefault(
+            "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
+        )
         command = [
             sys.executable, str(Path(__file__).resolve()),
             "--config", args.config, "collect", "--worker",

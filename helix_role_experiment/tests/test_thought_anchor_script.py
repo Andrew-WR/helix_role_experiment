@@ -20,6 +20,8 @@ class ThoughtAnchorScriptTests(unittest.TestCase):
         self.assertEqual(values["top_k_heads"], 16)
         self.assertEqual(values["query_tokens_per_sentence"], 4)
         self.assertEqual(values["query_chunk_size"], 32)
+        self.assertEqual(values["teacher_force_chunk_tokens"], 256)
+        self.assertEqual(values["minimum_teacher_force_chunk_tokens"], 64)
 
     def test_query_sampling_covers_every_sentence(self):
         owners = np.asarray([-1, 0, 0, 0, 1, 1, 2, 2, 2, 2])
@@ -28,6 +30,16 @@ class ThoughtAnchorScriptTests(unittest.TestCase):
         )
         self.assertEqual(set(selected_owners.tolist()), {0, 1, 2})
         self.assertTrue(np.all(np.diff(positions) >= 0))
+
+    def test_cached_chunk_uses_local_query_positions(self):
+        owners = np.asarray([-1, 0, 0, 0, 1, 1, 2, 2, 2, 2])
+        accumulator = COLLECTOR.SentenceAttentionAccumulator(
+            owners, sentence_count=3, per_sentence=2, chunk_size=32
+        )
+        accumulator.query_offset = 4
+        positions, selected_owners = accumulator.query_window(3)
+        self.assertEqual(positions.tolist(), [0, 1, 2])
+        self.assertEqual(selected_owners.tolist(), [1, 1, 2])
 
 
 if __name__ == "__main__":
