@@ -22,6 +22,7 @@ from helix_role_experiment.config import (
 from helix_role_experiment.models import huggingface_collector_from_config
 from helix_role_experiment.reasoning_benchmarks import ReadinessTask, readiness_prompt
 from helix_role_experiment.thought_anchors import (
+    attended_anchor_flags,
     forward_anchor_overlap,
     receiver_head_statistics,
     top_fraction_flags,
@@ -556,12 +557,27 @@ def finalize(config: dict[str, Any], paths: dict[str, Path]) -> None:
         vertical = vertical_array.astype(np.float64)
         with np.load(path) as data:
             sentence_ids = data["sentence_ids"].astype(str).tolist()
+            if "sentence_attention" not in data.files:
+                raise RuntimeError(
+                    f"{path} lacks cached sentence_attention; run collect once"
+                )
+            raw_attention = data["sentence_attention"].astype(np.float32)
         selected = []
+        selected_attention = []
         for head in heads:
             if head["layer"] in layers and head["head"] < vertical.shape[1]:
-                selected.append(vertical[layers.index(head["layer"]), head["head"]])
+                layer_index = layers.index(head["layer"])
+                selected.append(vertical[layer_index, head["head"]])
+                selected_attention.append(
+                    raw_attention[layer_index, head["head"]]
+                )
         scores = np.nanmean(np.asarray(selected), axis=0)
-        flags, percentiles = top_fraction_flags(scores, fraction)
+        primary_flags, percentiles = top_fraction_flags(scores, fraction)
+        mean_attention = np.nanmean(np.asarray(selected_attention), axis=0)
+        ancestor_flags, ancestor_percentiles, ancestor_scores = (
+            attended_anchor_flags(mean_attention, primary_flags, fraction)
+        )
+        flags = primary_flags | ancestor_flags
         records.append({
             "trace_id": trace["trace_id"], "task_id": trace["task_id"],
             "domain": trace["domain"], "split": trace["split"],
@@ -574,6 +590,16 @@ def finalize(config: dict[str, Any], paths: dict[str, Path]) -> None:
                     "within_trace_percentile": (
                         float(percentiles[index])
                         if np.isfinite(percentiles[index]) else None
+                    ),
+                    "primary_thought_anchor": bool(primary_flags[index]),
+                    "anchor_of_anchor": bool(ancestor_flags[index]),
+                    "anchor_of_anchor_attention": (
+                        float(ancestor_scores[index])
+                        if np.isfinite(ancestor_scores[index]) else None
+                    ),
+                    "anchor_of_anchor_percentile": (
+                        float(ancestor_percentiles[index])
+                        if np.isfinite(ancestor_percentiles[index]) else None
                     ),
                     "thought_anchor": bool(flags[index]),
                 }
@@ -609,6 +635,15 @@ def finalize(config: dict[str, Any], paths: dict[str, Path]) -> None:
             anchor = local.get(str(row["sentence_id"]))
             enriched_row.update({
                 "thought_anchor": bool(anchor["thought_anchor"]) if anchor else False,
+                "primary_thought_anchor": (
+                    bool(anchor["primary_thought_anchor"]) if anchor else False
+                ),
+                "anchor_of_anchor": (
+                    bool(anchor["anchor_of_anchor"]) if anchor else False
+                ),
+                "anchor_of_anchor_attention": (
+                    anchor["anchor_of_anchor_attention"] if anchor else None
+                ),
                 "thought_anchor_score": anchor["score"] if anchor else None,
                 "thought_anchor_percentile": (
                     anchor["within_trace_percentile"] if anchor else None

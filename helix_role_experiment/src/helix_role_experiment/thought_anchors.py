@@ -212,6 +212,60 @@ def top_fraction_flags(
     return flags, percentiles
 
 
+def attended_anchor_flags(
+    sentence_attention: np.ndarray,
+    primary_anchors: np.ndarray,
+    fraction: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Select one-hop ancestors most attended by each primary anchor.
+
+    ``sentence_attention[query, key]`` must already be aggregated over the
+    selected receiver heads. Only earlier key sentences are eligible. The
+    returned percentile and score are the maximum obtained across primary
+    anchor queries; this is deliberately not a recursive transitive closure.
+    """
+    values = np.asarray(sentence_attention, dtype=np.float64)
+    primary = np.asarray(primary_anchors, dtype=bool)
+    if values.ndim != 2 or values.shape[0] != values.shape[1]:
+        raise ValueError("sentence attention must be a square matrix")
+    if primary.shape != (len(values),):
+        raise ValueError("primary anchor flags must match sentence attention")
+    if not 0 < fraction < 1:
+        raise ValueError("anchor fraction must be in (0, 1)")
+    flags = np.zeros(len(values), dtype=bool)
+    percentiles = np.full(len(values), np.nan, dtype=np.float64)
+    scores = np.full(len(values), np.nan, dtype=np.float64)
+    for query_index in np.flatnonzero(primary):
+        candidates = np.arange(query_index, dtype=np.int64)
+        finite = np.isfinite(values[query_index, :query_index])
+        candidates = candidates[finite]
+        if not len(candidates):
+            continue
+        order = candidates[np.argsort(
+            values[query_index, candidates], kind="stable"
+        )]
+        if len(order) == 1:
+            local_percentiles = np.asarray([1.0])
+        else:
+            local_percentiles = (
+                np.arange(len(order), dtype=np.float64) / (len(order) - 1)
+            )
+        count = max(1, int(math.ceil(len(order) * fraction)))
+        chosen = order[-count:]
+        chosen_percentiles = local_percentiles[-count:]
+        flags[chosen] = True
+        for sentence_index, percentile in zip(chosen, chosen_percentiles):
+            score = values[query_index, sentence_index]
+            if (
+                not np.isfinite(percentiles[sentence_index])
+                or percentile > percentiles[sentence_index]
+            ):
+                percentiles[sentence_index] = percentile
+            if not np.isfinite(scores[sentence_index]) or score > scores[sentence_index]:
+                scores[sentence_index] = score
+    return flags, percentiles, scores
+
+
 def forward_anchor_overlap(
     anchor_records: list[dict[str, Any]],
     annotation_records: list[dict[str, Any]],
@@ -221,7 +275,8 @@ def forward_anchor_overlap(
         if record.get("source") != "modernbert_sequential_event_tagger"
     }
     totals = {
-        "scored_sentences": 0, "anchors": 0, "forward_progress": 0,
+        "scored_sentences": 0, "anchors": 0, "primary_anchors": 0,
+        "anchor_of_anchor_sentences": 0, "forward_progress": 0,
         "productive_backtracks": 0, "forward_and_anchor": 0,
         "backtrack_and_anchor": 0,
     }
@@ -243,6 +298,10 @@ def forward_anchor_overlap(
             increments = {
                 "scored_sentences": 1,
                 "anchors": int(is_anchor),
+                "primary_anchors": int(anchor.get("primary_thought_anchor", is_anchor)),
+                "anchor_of_anchor_sentences": int(
+                    anchor.get("anchor_of_anchor", False)
+                ),
                 "forward_progress": int(label == "forward_progress"),
                 "productive_backtracks": int(label == "productive_backtrack"),
                 "forward_and_anchor": int(is_anchor and label == "forward_progress"),
@@ -274,8 +333,9 @@ def forward_anchor_overlap(
 
     return {
         "definition": (
-            "Thought anchors are the configured top within-trace fraction of "
-            "receiver-head scores. LLM rows exclude ModernBERT pseudo-labels."
+            "Thought anchors are the union of primary receiver-score anchors "
+            "and the one-hop top-fraction prior sentences each primary anchor "
+            "attends to. LLM rows exclude ModernBERT pseudo-labels."
         ),
         "overall": rates(totals),
         "by_llm_source": {key: rates(value) for key, value in by_source.items()},

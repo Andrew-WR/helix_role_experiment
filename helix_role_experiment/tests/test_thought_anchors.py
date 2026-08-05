@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from helix_role_experiment.thought_anchors import (
+    attended_anchor_flags,
     excess_kurtosis,
     forward_anchor_overlap,
     receiver_head_statistics,
@@ -32,6 +33,28 @@ class ThoughtAnchorTests(unittest.TestCase):
         )
         self.assertEqual(flags.tolist(), [False, False, False, True, False])
         self.assertTrue(np.isnan(percentiles[2]))
+
+    def test_anchor_of_anchor_selects_top_prior_fraction_one_hop(self):
+        attention = np.zeros((6, 6), dtype=float)
+        attention[5, :5] = [0.1, 0.9, 0.2, 0.8, 0.3]
+        primary = np.asarray([False, False, False, False, False, True])
+        flags, percentiles, scores = attended_anchor_flags(
+            attention, primary, fraction=0.4
+        )
+        self.assertEqual(
+            flags.tolist(), [False, True, False, True, False, False]
+        )
+        self.assertEqual(scores[1], 0.9)
+        self.assertGreater(percentiles[1], percentiles[3])
+
+    def test_anchor_of_anchor_does_not_recurse(self):
+        attention = np.zeros((4, 4), dtype=float)
+        attention[3, 2] = 1.0
+        attention[2, 0] = 1.0
+        primary = np.asarray([False, False, False, True])
+        flags, _, _ = attended_anchor_flags(attention, primary, fraction=0.25)
+        self.assertTrue(flags[2])
+        self.assertFalse(flags[0])
 
     def test_spiky_values_have_positive_excess_kurtosis(self):
         self.assertGreater(excess_kurtosis(np.asarray([0] * 20 + [10])), 0)
