@@ -33,6 +33,22 @@ class ReadinessFinalizerTests(unittest.TestCase):
             self.assertEqual(compatible, [gated])
             self.assertEqual(stale, [old_control])
 
+    def test_code_scores_include_normalized_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tables = Path(temporary)
+            result = tables / "humaneval_gated.jsonl_results.jsonl"
+            result.write_text(json.dumps({
+                "task_id": "HumanEval/1",
+                "passed": False,
+                "functional_passed": True,
+                "normalized_passed": True,
+                "format_valid": False,
+            }) + "\n", encoding="utf-8")
+            scores = FINALIZER.load_code_scores({"tables": tables}, "gated")
+            self.assertFalse(scores["HumanEval/1"]["strict"])
+            self.assertTrue(scores["HumanEval/1"]["functional"])
+            self.assertTrue(scores["HumanEval/1"]["normalized"])
+
     def test_status_distinguishes_within_model_failure_from_replication(self):
         failed = [{
             "candidate_method": True,

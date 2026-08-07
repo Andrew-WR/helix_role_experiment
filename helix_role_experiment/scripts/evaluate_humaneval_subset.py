@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import copy
 import contextlib
 import io
 import json
@@ -10,6 +12,7 @@ import queue
 import re
 import signal
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +64,114 @@ def completion_format(completion: str, entry_point: str) -> tuple[bool, str]:
     if definition.search(value):
         return False, "repeats_supplied_function"
     return True, "valid_completion_only_format"
+
+
+class _RenameGeneratedEntry(ast.NodeTransformer):
+    def __init__(self, original: str, replacement: str):
+        self.original = original
+        self.replacement = replacement
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        if node.id == self.original:
+            return ast.copy_location(
+                ast.Name(id=self.replacement, ctx=node.ctx), node
+            )
+        return node
+
+
+def _entry_call_arguments(function: ast.FunctionDef) -> tuple[list[ast.expr], list[ast.keyword]]:
+    arguments: list[ast.expr] = [
+        ast.Name(id=value.arg, ctx=ast.Load())
+        for value in (*function.args.posonlyargs, *function.args.args)
+    ]
+    if function.args.vararg is not None:
+        arguments.append(ast.Starred(
+            value=ast.Name(id=function.args.vararg.arg, ctx=ast.Load()),
+            ctx=ast.Load(),
+        ))
+    keywords = [
+        ast.keyword(arg=value.arg, value=ast.Name(id=value.arg, ctx=ast.Load()))
+        for value in function.args.kwonlyargs
+    ]
+    if function.args.kwarg is not None:
+        keywords.append(ast.keyword(
+            arg=None,
+            value=ast.Name(id=function.args.kwarg.arg, ctx=ast.Load()),
+        ))
+    return arguments, keywords
+
+
+def normalize_standalone_completion(
+    prompt: str, completion: str, entry_point: str,
+) -> tuple[str | None, str]:
+    """Convert a standalone function solution into a strict continuation.
+
+    The generated entry function becomes a uniquely named nested helper. This
+    preserves its own signature and recursion. Imports, constants, classes,
+    and helper functions are moved into the supplied HumanEval function's
+    scope, after which the helper is called with the supplied arguments.
+    """
+    valid, _ = completion_format(completion, entry_point)
+    if valid:
+        return completion, "already_valid_completion"
+    try:
+        prompt_tree = ast.parse(prompt)
+        generated_tree = ast.parse(completion)
+    except SyntaxError as exc:
+        return None, f"unparseable_python:{exc.msg}"
+    supplied = next((
+        node for node in reversed(prompt_tree.body)
+        if isinstance(node, ast.FunctionDef) and node.name == entry_point
+    ), None)
+    generated = next((
+        node for node in reversed(generated_tree.body)
+        if isinstance(node, ast.FunctionDef) and node.name == entry_point
+    ), None)
+    if supplied is None:
+        return None, "supplied_entry_function_not_found"
+    if generated is None:
+        return None, "generated_entry_function_not_found"
+
+    occupied = {
+        node.name for node in generated_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    helper_name = f"_normalized_{entry_point}"
+    suffix = 2
+    while helper_name in occupied:
+        helper_name = f"_normalized_{entry_point}_{suffix}"
+        suffix += 1
+
+    safe_support = (
+        ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef,
+        ast.ClassDef, ast.Assign, ast.AnnAssign,
+    )
+    support = [
+        copy.deepcopy(node) for node in generated_tree.body
+        if isinstance(node, safe_support)
+        and not (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == entry_point
+        )
+    ]
+    nested_entry = copy.deepcopy(generated)
+    nested_entry.name = helper_name
+    renamer = _RenameGeneratedEntry(entry_point, helper_name)
+    support = [renamer.visit(node) for node in support]
+    nested_entry = renamer.visit(nested_entry)
+    call_args, call_keywords = _entry_call_arguments(supplied)
+    invoke = ast.Return(value=ast.Call(
+        func=ast.Name(id=helper_name, ctx=ast.Load()),
+        args=call_args,
+        keywords=call_keywords,
+    ))
+    module = ast.Module(body=[*support, nested_entry, invoke], type_ignores=[])
+    ast.fix_missing_locations(module)
+    normalized = textwrap.indent(ast.unparse(module), "    ") + "\n"
+    valid, reason = completion_format(normalized, entry_point)
+    if not valid:
+        return None, f"normalizer_produced_invalid_format:{reason}"
+    return normalized, "standalone_entry_wrapped"
 
 
 def _execute(program: str, result: Any) -> None:
@@ -179,12 +290,13 @@ def evaluate_file(
     source: Path,
     tasks: dict[str, dict[str, Any]],
     timeout: float,
-) -> tuple[Path, int, int]:
+) -> tuple[Path, int, int, int]:
     samples = read_jsonl(source)
     if not samples:
         raise RuntimeError(f"{source} contains no samples")
     results = []
     passed = 0
+    normalized_passed = 0
     for index, sample in enumerate(samples, 1):
         task_id = str(sample["task_id"])
         if task_id not in tasks:
@@ -199,6 +311,35 @@ def evaluate_file(
         )
         functional_passed = bool(outcome["passed"])
         strict_passed = bool(functional_passed and format_valid)
+        normalized_completion, normalization_reason = normalize_standalone_completion(
+            str(tasks[task_id]["prompt"]),
+            str(sample.get("completion", "")),
+            str(tasks[task_id]["metadata"]["entry_point"]),
+        )
+        if normalized_completion is None:
+            normalized_outcome = {
+                "passed": False,
+                "result": "normalization unavailable",
+            }
+            normalized_format_valid = False
+            normalized_format_reason = normalization_reason
+        elif normalization_reason == "already_valid_completion":
+            normalized_outcome = outcome
+            normalized_format_valid = format_valid
+            normalized_format_reason = format_reason
+        else:
+            normalized_outcome = check_program(
+                build_program(tasks[task_id], normalized_completion),
+                timeout,
+            )
+            normalized_format_valid, normalized_format_reason = completion_format(
+                normalized_completion,
+                str(tasks[task_id]["metadata"]["entry_point"]),
+            )
+        normalized_functional = bool(normalized_outcome["passed"])
+        normalized_strict = bool(
+            normalized_functional and normalized_format_valid
+        )
         result = {
             **sample,
             **outcome,
@@ -206,19 +347,32 @@ def evaluate_file(
             "format_valid": format_valid,
             "format_reason": format_reason,
             "passed": strict_passed,
+            "normalized_completion": normalized_completion,
+            "normalization_applied": bool(
+                normalized_completion is not None
+                and normalization_reason != "already_valid_completion"
+            ),
+            "normalization_reason": normalization_reason,
+            "normalized_functional_passed": normalized_functional,
+            "normalized_format_valid": normalized_format_valid,
+            "normalized_format_reason": normalized_format_reason,
+            "normalized_passed": normalized_strict,
+            "normalized_execution_result": normalized_outcome["result"],
             "completion_id": 0,
         }
         results.append(result)
         passed += int(strict_passed)
+        normalized_passed += int(normalized_strict)
         print(
             f"[{source.stem} {index}/{len(samples)}] {task_id}: "
             f"functional={functional_passed}; strict={strict_passed}; "
+            f"normalized={normalized_strict}; "
             f"format={format_reason}; execution={outcome['result']}",
             flush=True,
         )
     destination = Path(str(source) + "_results.jsonl")
     atomic_jsonl(destination, results)
-    return destination, passed, len(results)
+    return destination, passed, normalized_passed, len(results)
 
 
 def main() -> None:
@@ -251,9 +405,12 @@ def main() -> None:
             raise RuntimeError(
                 f"missing {source}; finish or safely pause 07d so it exports samples"
             )
-        destination, passed, total = evaluate_file(source, tasks, args.timeout)
+        destination, passed, normalized_passed, total = evaluate_file(
+            source, tasks, args.timeout
+        )
         print(
-            f"{condition}: {passed}/{total} strict passes; wrote {destination}",
+            f"{condition}: {passed}/{total} strict passes; "
+            f"{normalized_passed}/{total} normalized passes; wrote {destination}",
             flush=True,
         )
 

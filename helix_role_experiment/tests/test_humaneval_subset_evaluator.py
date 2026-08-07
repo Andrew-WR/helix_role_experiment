@@ -57,6 +57,40 @@ class HumanEvalSubsetEvaluatorTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertEqual(reason, "not_an_indented_prompt_continuation")
 
+    def test_normalizer_wraps_full_function_and_helpers_as_continuation(self):
+        prompt = (
+            "def factorial(n):\n"
+            "    \"\"\"Return n factorial.\"\"\"\n"
+        )
+        standalone = (
+            "def positive(n):\n"
+            "    return n > 0\n\n"
+            "def factorial(n):\n"
+            "    if not positive(n):\n"
+            "        return 1\n"
+            "    return n * factorial(n - 1)\n"
+        )
+        normalized, reason = EVALUATOR.normalize_standalone_completion(
+            prompt, standalone, "factorial"
+        )
+        self.assertEqual(reason, "standalone_entry_wrapped")
+        self.assertIsNotNone(normalized)
+        valid, _ = EVALUATOR.completion_format(normalized, "factorial")
+        self.assertTrue(valid)
+        namespace = {}
+        exec(prompt + normalized, namespace)
+        self.assertEqual(namespace["factorial"](5), 120)
+
+    def test_normalizer_preserves_already_valid_completion(self):
+        completion = "    return a + b\n"
+        normalized, reason = EVALUATOR.normalize_standalone_completion(
+            "def add(a, b):\n    \"\"\"Add values.\"\"\"\n",
+            completion,
+            "add",
+        )
+        self.assertEqual(normalized, completion)
+        self.assertEqual(reason, "already_valid_completion")
+
     def test_rebuild_inputs_uses_saved_baseline_and_steering_traces(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

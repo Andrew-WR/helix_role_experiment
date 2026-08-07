@@ -34,6 +34,7 @@ def load_code_scores(paths: dict[str, Path], condition: str) -> dict[str, dict]:
         str(row["task_id"]): {
             "strict": bool(row["passed"]),
             "functional": bool(row.get("functional_passed", row["passed"])),
+            "normalized": bool(row.get("normalized_passed", row["passed"])),
             "format_valid": bool(row.get("format_valid", True)),
         }
         for row in read_jsonl(source)
@@ -52,7 +53,7 @@ def metric(value: object, percent: bool = False) -> str:
 def print_diagnostics(summaries: list[dict], gate_rows: list[dict]) -> None:
     print("\nCondition results", flush=True)
     print(
-        "condition  domain   scored/tasks  strict_acc  functional_acc  mean_tokens",
+        "condition  domain   scored/tasks  strict_acc  functional_acc  normalized_acc  mean_tokens",
         flush=True,
     )
     for row in summaries:
@@ -61,6 +62,7 @@ def print_diagnostics(summaries: list[dict], gate_rows: list[dict]) -> None:
             f"{row['scored_tasks']:>3}/{row['tasks']:<3}       "
             f"{metric(row['accuracy'], percent=True):>10}  "
             f"{metric(row['functional_accuracy'], percent=True):>14}  "
+            f"{metric(row['normalized_accuracy'], percent=True):>14}  "
             f"{metric(row['mean_output_tokens']):>11}",
             flush=True,
         )
@@ -128,6 +130,7 @@ def main() -> None:
                 "task_id": row["task_id"], "domain": row["domain"], "condition": "baseline",
                 "tokens": row["output_token_count"], "correct": row["math_correct"],
                 "functional_correct": row["math_correct"],
+                "normalized_correct": row["math_correct"],
             })
     steering_sources = sorted(
         (paths["traces"] / "readiness_steering").glob("*.json")
@@ -147,6 +150,7 @@ def main() -> None:
             "task_id": row["task_id"], "domain": row["domain"], "condition": row["condition"],
             "tokens": row["output_token_count"], "correct": row["math_correct"],
             "functional_correct": row["math_correct"],
+            "normalized_correct": row["math_correct"],
         })
     conditions = sorted({row["condition"] for row in observations})
     missing = []
@@ -158,6 +162,7 @@ def main() -> None:
                     score = scores[row["task_id"]]
                     row["correct"] = score["strict"]
                     row["functional_correct"] = score["functional"]
+                    row["normalized_correct"] = score["normalized"]
                 else:
                     missing.append((condition, row["task_id"]))
     if missing and not args.allow_missing_code:
@@ -175,6 +180,9 @@ def main() -> None:
             functional_scored = [
                 row for row in selected if row["functional_correct"] is not None
             ]
+            normalized_scored = [
+                row for row in selected if row["normalized_correct"] is not None
+            ]
             summaries.append({
                 "condition": condition, "domain": domain, "tasks": len(selected),
                 "scored_tasks": len(scored), "accuracy": float(np.mean([row["correct"] for row in scored])) if scored else None,
@@ -182,6 +190,11 @@ def main() -> None:
                     float(np.mean([
                         row["functional_correct"] for row in functional_scored
                     ])) if functional_scored else None
+                ),
+                "normalized_accuracy": (
+                    float(np.mean([
+                        row["normalized_correct"] for row in normalized_scored
+                    ])) if normalized_scored else None
                 ),
                 "mean_output_tokens": float(np.mean([row["tokens"] for row in selected])) if selected else None,
             })
