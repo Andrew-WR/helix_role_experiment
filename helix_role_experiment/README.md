@@ -174,6 +174,9 @@ remain unvalidated for code-domain sentence progress, so the report keeps math
 and code metrics separate. The graph's past edges measure continuity or
 redundancy; retrieval by later sentences measures future uptake. A direct PRM
 baseline is necessary because a quality reward is not itself a novelty label.
+ReasonFlux's remote config is patched in memory with the tokenizer's declared
+padding ID for Transformers 5 compatibility. BGE-M3 dense vectors are read
+directly from its first final-layer token, avoiding optional TorchCodec imports.
 
 Run the two resumable feature collectors and then the CPU-only evaluation:
 

@@ -1,4 +1,8 @@
+import importlib.util
+import sys
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -10,7 +14,28 @@ from helix_role_experiment.prm_graph_labeling import (
 )
 
 
+SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "scripts" / "07b_evaluate_prm_graph_labelers.py"
+)
+sys.path.insert(0, str(SCRIPT.parent))
+SPEC = importlib.util.spec_from_file_location("prm_graph_labelers_07b", SCRIPT)
+SCRIPT_MODULE = importlib.util.module_from_spec(SPEC)
+assert SPEC and SPEC.loader
+SPEC.loader.exec_module(SCRIPT_MODULE)
+
+
 class PrmGraphLabelingTests(unittest.TestCase):
+    def test_reasonflux_config_gets_tokenizer_padding_id(self):
+        config = SimpleNamespace()
+        tokenizer = SimpleNamespace(pad_token_id=151643, eos_token_id=151645)
+        result = SCRIPT_MODULE.ensure_prm_config_compatibility(config, tokenizer)
+        self.assertEqual(result.pad_token_id, 151643)
+
+    def test_reasonflux_revision_is_pinned(self):
+        values = SCRIPT_MODULE.settings({})
+        self.assertEqual(len(values["prm_revision"]), 40)
+
     def test_direct_prm_features_preserve_level_and_change(self):
         features = direct_prm_features(np.asarray([0.2, 0.2, 0.8]))
         self.assertEqual(features.shape, (3, 7))

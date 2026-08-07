@@ -73,6 +73,7 @@ def parse_args() -> argparse.Namespace:
 def settings(config: dict[str, Any]) -> dict[str, Any]:
     values: dict[str, Any] = {
         "prm_model_id": "Gen-Verse/ReasonFlux-PRM-7B",
+        "prm_revision": "835c4809502841a4601b024f770f8d1f62efaabf",
         "embedding_model_id": "BAAI/bge-m3",
         "dtype": "float16",
         "attn_implementation": "sdpa",
@@ -80,6 +81,7 @@ def settings(config: dict[str, Any]) -> dict[str, Any]:
         "max_memory": {"0": "14GiB", "1": "14GiB", "cpu": "20GiB"},
         "embedding_device": "cuda:0",
         "embedding_batch_size": 32,
+        "embedding_max_length": 512,
         "graph_k": 5,
         "ridge": 1.0,
         "minimum_threshold": 0.05,
@@ -141,16 +143,25 @@ def _atomic_npz(path: Path, **arrays: Any) -> None:
 
 def _artifact_matches(
     path: Path, sentence_ids: list[str], model_id: str, value_key: str,
+    revision: str | None = None,
 ) -> bool:
     if not path.exists():
         return False
     try:
         with np.load(path, allow_pickle=False) as data:
-            return (
+            base_matches = (
                 value_key in data.files
                 and data["sentence_ids"].astype(str).tolist() == sentence_ids
                 and str(data["model_id"].item()) == model_id
             )
+            revision_matches = (
+                revision is None
+                or (
+                    "revision" in data.files
+                    and str(data["revision"].item()) == revision
+                )
+            )
+            return base_matches and revision_matches
     except (OSError, ValueError, KeyError):
         return False
 
@@ -166,16 +177,37 @@ def _torch_dtype(torch: Any, name: str) -> Any:
     return mapping[name]
 
 
+def ensure_prm_config_compatibility(config: Any, tokenizer: Any) -> Any:
+    """Fill fields omitted by ReasonFlux's legacy remote configuration."""
+    if not hasattr(config, "pad_token_id"):
+        pad_token_id = tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = tokenizer.eos_token_id
+        if pad_token_id is None:
+            raise RuntimeError("ReasonFlux tokenizer defines no pad or EOS token")
+        config.pad_token_id = int(pad_token_id)
+    return config
+
+
 def load_prm_model(values: dict[str, Any]) -> tuple[Any, Any]:
     try:
         import torch
-        from transformers import AutoModel, AutoTokenizer
+        from transformers import AutoConfig, AutoModel, AutoTokenizer
     except ImportError as exc:
         raise RuntimeError("install the project model dependencies first") from exc
     if not torch.cuda.is_available():
         raise RuntimeError("PRM collection requires a CUDA GPU")
     model_id = str(values["prm_model_id"])
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    revision = str(values["prm_revision"])
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_id, revision=revision, trust_remote_code=True
+    )
+    config = AutoConfig.from_pretrained(
+        model_id, revision=revision, trust_remote_code=True
+    )
+    config = ensure_prm_config_compatibility(config, tokenizer)
+    config._attn_implementation = str(values["attn_implementation"])
+    config.use_cache = False
     configured_memory = dict(values.get("max_memory", {}))
     max_memory: dict[int | str, str] = {}
     for key, value in configured_memory.items():
@@ -189,6 +221,8 @@ def load_prm_model(values: dict[str, Any]) -> tuple[Any, Any]:
         "device_map": "auto",
         "dtype": _torch_dtype(torch, str(values["dtype"])),
         "trust_remote_code": True,
+        "revision": revision,
+        "config": config,
         "low_cpu_mem_usage": True,
         "max_memory": max_memory,
     }
@@ -240,7 +274,7 @@ def score_trace_with_prm(
     positions = positions[-len(sentences):]
     first_device = next(model.parameters()).device
     with torch.inference_mode():
-        outputs = model(input_ids=input_ids.to(first_device))
+        outputs = model(input_ids=input_ids.to(first_device), use_cache=False)
     logits = outputs[0] if isinstance(outputs, (tuple, list)) else outputs.logits
     selected = logits[0, positions.to(logits.device)]
     if selected.ndim != 2 or selected.shape[-1] < 2:
@@ -254,12 +288,15 @@ def collect_prm(
     values: dict[str, Any], limit: int | None,
 ) -> None:
     model_id = str(values["prm_model_id"])
+    revision = str(values["prm_revision"])
     root = paths["traces"] / "prm_sentence_scores"
     pending = []
     for trace in traces:
         ids = [str(row["sentence_id"]) for row in reasoning_sentences(trace)]
         target = root / f"{trace['trace_id']}.npz"
-        if not _artifact_matches(target, ids, model_id, "prm_scores"):
+        if not _artifact_matches(
+            target, ids, model_id, "prm_scores", revision=revision
+        ):
             pending.append(trace)
     if limit is not None:
         pending = pending[:max(limit, 0)]
@@ -278,6 +315,7 @@ def collect_prm(
             sentence_ids=np.asarray([str(row["sentence_id"]) for row in sentences]),
             prm_scores=scores,
             model_id=np.asarray(model_id),
+            revision=np.asarray(revision),
             input_token_count=np.asarray(token_count, dtype=np.int64),
         )
         print(
@@ -294,9 +332,11 @@ def collect_embeddings(
     values: dict[str, Any], limit: int | None,
 ) -> None:
     try:
-        from sentence_transformers import SentenceTransformer
+        import torch
+        import torch.nn.functional as functional
+        from transformers import AutoModel, AutoTokenizer
     except ImportError as exc:
-        raise RuntimeError("install sentence-transformers before collecting embeddings") from exc
+        raise RuntimeError("install the project model dependencies first") from exc
     model_id = str(values["embedding_model_id"])
     root = paths["traces"] / "prm_graph_embeddings"
     pending = []
@@ -310,19 +350,40 @@ def collect_embeddings(
     if not pending:
         print("All requested sentence embedding artifacts already exist.", flush=True)
         return
-    model = SentenceTransformer(
-        model_id,
-        device=str(values["embedding_device"]),
-        trust_remote_code=True,
-    )
+    device = torch.device(str(values["embedding_device"]))
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model_kwargs: dict[str, Any] = {}
+    if device.type == "cuda":
+        model_kwargs["dtype"] = torch.float16
+    try:
+        model = AutoModel.from_pretrained(model_id, **model_kwargs).to(device).eval()
+    except TypeError as exc:
+        if "dtype" not in str(exc):
+            raise
+        model_kwargs["torch_dtype"] = model_kwargs.pop("dtype")
+        model = AutoModel.from_pretrained(model_id, **model_kwargs).to(device).eval()
     for index, trace in enumerate(pending, start=1):
         sentences = reasoning_sentences(trace)
-        embeddings = model.encode(
-            [str(row["text"]) for row in sentences],
-            batch_size=int(values["embedding_batch_size"]),
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
+        texts = [str(row["text"]) for row in sentences]
+        batches = []
+        batch_size = int(values["embedding_batch_size"])
+        for start in range(0, len(texts), batch_size):
+            encoded = tokenizer(
+                texts[start:start + batch_size],
+                padding=True,
+                truncation=True,
+                max_length=int(values["embedding_max_length"]),
+                return_tensors="pt",
+            )
+            encoded = {key: value.to(device) for key, value in encoded.items()}
+            with torch.inference_mode():
+                # BGE-M3 defines its dense vector as the first token in the
+                # final hidden state.  Going through Transformers directly
+                # avoids optional audio/video TorchCodec imports.
+                dense = model(**encoded).last_hidden_state[:, 0]
+                dense = functional.normalize(dense.float(), p=2, dim=-1)
+            batches.append(dense.cpu().numpy())
+        embeddings = np.concatenate(batches, axis=0)
         target = root / f"{trace['trace_id']}.npz"
         _atomic_npz(
             target,
@@ -367,6 +428,7 @@ def load_artifacts(
         prm_ids = data["sentence_ids"].astype(str).tolist()
         prm_scores = data["prm_scores"].astype(np.float64)
         prm_model = str(data["model_id"].item())
+        prm_revision = str(data["revision"].item()) if "revision" in data.files else None
     with np.load(embedding_path, allow_pickle=False) as data:
         embedding_ids = data["sentence_ids"].astype(str).tolist()
         embeddings = data["embeddings"].astype(np.float64)
@@ -375,6 +437,8 @@ def load_artifacts(
         raise RuntimeError(f"feature/sentence alignment mismatch for {trace_id}")
     if prm_model != str(values["prm_model_id"]):
         raise RuntimeError(f"stale PRM artifact for {trace_id}: {prm_model}")
+    if prm_revision != str(values["prm_revision"]):
+        raise RuntimeError(f"stale PRM revision for {trace_id}: {prm_revision}")
     if embedding_model != str(values["embedding_model_id"]):
         raise RuntimeError(f"stale embedding artifact for {trace_id}: {embedding_model}")
     return expected_ids, prm_scores, embeddings
@@ -432,10 +496,12 @@ def evaluate(
             for split in ("train", "val", "test")
         },
         "prm_model": str(values["prm_model_id"]),
+        "prm_revision": str(values["prm_revision"]),
         "embedding_model": str(values["embedding_model_id"]),
         "benchmark_settings": {
             key: values[key] for key in (
                 "graph_k", "ridge", "minimum_threshold", "target_precision",
+                "embedding_max_length",
                 "minimum_validation_precision", "minimum_validation_recall",
                 "minimum_validation_lift", "minimum_tolerant_f1",
             )
