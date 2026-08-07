@@ -30,6 +30,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=2)
+    parser.add_argument(
+        "--conditions",
+        nargs="+",
+        choices=("gated", "always", "random"),
+        help=(
+            "run only these intervention conditions; scheduling does not alter "
+            "the scientific fingerprint, so compatible checkpoints are reused"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -44,11 +53,20 @@ def completed_expected(paths: list[Path], fingerprint: str) -> int:
     return sum(valid_steering_artifact(path, fingerprint) for path in paths)
 
 
+def selected_conditions(
+    requested: list[str] | None, intervention: dict,
+) -> list[str]:
+    return list(
+        requested
+        or intervention.get("conditions", ["gated", "always", "random"])
+    )
+
+
 def worker(args: argparse.Namespace, config: dict, paths: dict[str, Path]) -> None:
     all_rows = [row for row in read_jsonl(paths["tables"] / "readiness_tasks.jsonl") if row["split"] == "test"]
     rows = [row for index, row in enumerate(all_rows) if index % args.num_shards == args.shard_index]
     intervention = config["intervention"]
-    conditions = list(intervention.get("conditions", ["gated", "always", "random"]))
+    conditions = selected_conditions(args.conditions, intervention)
     batch_size = int(config["collection"].get("batch_size", 2))
     output_dir = paths["traces"] / "readiness_steering"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -205,10 +223,13 @@ def main() -> None:
     for shard in range(2):
         environment = os.environ.copy()
         environment["CUDA_VISIBLE_DEVICES"] = str(shard)
-        processes.append(subprocess.Popen([
+        command = [
             sys.executable, str(Path(__file__).resolve()), "--config", args.config,
             "--worker", "--shard-index", str(shard), "--num-shards", "2",
-        ], env=environment))
+        ]
+        if args.conditions:
+            command.extend(["--conditions", *args.conditions])
+        processes.append(subprocess.Popen(command, env=environment))
     try:
         codes = [process.wait() for process in processes]
     except KeyboardInterrupt:

@@ -16,6 +16,16 @@ SPEC.loader.exec_module(STEERING)
 
 
 class SteeringResumeTests(unittest.TestCase):
+    def test_cli_condition_override_can_select_only_gated(self):
+        intervention = {"conditions": ["gated", "always", "random"]}
+        self.assertEqual(
+            STEERING.selected_conditions(["gated"], intervention), ["gated"]
+        )
+        self.assertEqual(
+            STEERING.selected_conditions(None, intervention),
+            ["gated", "always", "random"],
+        )
+
     def test_destination_is_stable_and_progress_counts_existing_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

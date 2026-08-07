@@ -206,6 +206,28 @@ written to `tables/prm_graph_labeler_benchmark.json`,
 trajectories, a pass warrants a larger audited pilot rather than automatic
 promotion to the other 85 traces.
 
+To deliberately promote the selected embedding graph despite that caution,
+embed all 100 saved trajectories and fill only the 85 without strong labels:
+
+```bash
+python scripts/07b_evaluate_prm_graph_labelers.py \
+  --config configs/qwen_9b_readiness_kaggle.json \
+  collect-embeddings --all-trajectories
+
+python scripts/07b_evaluate_prm_graph_labelers.py \
+  --config configs/qwen_9b_readiness_kaggle.json \
+  apply-embedding-graph
+
+python scripts/07c_fit_survival_probes.py \
+  --config configs/qwen_9b_readiness_kaggle.json
+```
+
+Application preserves the 15 strong records, writes an immutable first backup
+to `sentence_annotations_before_embedding_graph.jsonl`, writes the complete
+graph-specific table to `sentence_annotations_embedding_graph.jsonl`, and then
+activates the same 100 rows as `sentence_annotations.jsonl`. Per-sentence graph
+probabilities are retained in `embedding_graph_pseudo_label_scores.jsonl`.
+
 ### Local fallback: sequential ModernBERT
 
 The preferred replacement for hosted or generative-LLM labeling is the
@@ -301,6 +323,24 @@ test workload after every generated result. Interrupting the parent once asks
 both workers to terminate; every completed result is already an atomic JSON
 checkpoint, and rerunning the same command skips it. Only a generation still
 in flight at interruption is repeated.
+
+To schedule only the proposed method and skip the always/random controls, pass
+`--conditions gated`. This scheduling override leaves the run fingerprint
+unchanged, so compatible gated checkpoints already produced by the same probe
+are reused:
+
+```bash
+python scripts/07d_run_readiness_steering.py \
+  --config configs/qwen_9b_readiness_kaggle.json \
+  --conditions gated
+
+python scripts/evaluate_humaneval_subset.py \
+  --config configs/qwen_9b_readiness_kaggle.json \
+  --condition baseline --condition gated
+
+python scripts/07e_finalize_readiness_results.py \
+  --config configs/qwen_9b_readiness_kaggle.json
+```
 
 Stage 07b obtains `OPENAI_API_KEY` from the environment, or from the Kaggle
 secret of the same name, and never writes the key. It sends concurrent,

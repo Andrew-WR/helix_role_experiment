@@ -28,12 +28,14 @@ from helix_role_experiment.prm_graph_labeling import (
     temporal_graph_features,
     validation_gate,
 )
+from helix_role_experiment.event_tagger import annotations_from_event_probabilities
 
 
 EXCLUDED_SOURCES = {
     "attention_burst_pseudo_labeler",
     "attention_reorientation_pseudo_labeler",
     "modernbert_sequential_event_tagger",
+    "embedding_graph_pseudo_labeler",
 }
 METHOD_FEATURE_NAMES = {
     "prm": [
@@ -66,7 +68,16 @@ def parse_args() -> argparse.Namespace:
     prm.add_argument("--limit", type=int)
     embeddings = subparsers.add_parser("collect-embeddings")
     embeddings.add_argument("--limit", type=int)
+    embeddings.add_argument(
+        "--all-trajectories",
+        action="store_true",
+        help="collect resumable embeddings for all baseline trajectories, not only the 15 labels",
+    )
     subparsers.add_parser("evaluate")
+    subparsers.add_parser(
+        "apply-embedding-graph",
+        help="preserve strong labels and fill every missing trajectory with the selected graph",
+    )
     return parser.parse_args()
 
 
@@ -90,6 +101,7 @@ def settings(config: dict[str, Any]) -> dict[str, Any]:
         "minimum_validation_recall": 0.25,
         "minimum_validation_lift": 2.0,
         "minimum_tolerant_f1": 0.25,
+        "review_margin": 0.05,
     }
     values.update(config.get("prm_graph_labeling", {}))
     return values
@@ -127,6 +139,18 @@ def labeled_traces(
         raise RuntimeError("missing baseline traces:\n" + "\n".join(missing[:5]))
     order = {"train": 0, "val": 1, "test": 2}
     return sorted(traces, key=lambda row: (order.get(str(row["split"]), 9), str(row["trace_id"])))
+
+
+def all_baseline_traces(paths: dict[str, Path]) -> list[dict[str, Any]]:
+    sources = sorted((paths["traces"] / "readiness_baseline").glob("*.json"))
+    if not sources:
+        raise RuntimeError("run 07a collection first")
+    traces = [json.loads(source.read_text(encoding="utf-8")) for source in sources]
+    order = {"train": 0, "val": 1, "test": 2}
+    return sorted(
+        traces,
+        key=lambda row: (order.get(str(row["split"]), 9), str(row["trace_id"])),
+    )
 
 
 def reasoning_sentences(trace: dict[str, Any]) -> list[dict[str, Any]]:
@@ -398,6 +422,146 @@ def collect_embeddings(
         )
 
 
+def load_embedding_artifact(
+    paths: dict[str, Path], trace: dict[str, Any], values: dict[str, Any],
+) -> tuple[list[str], np.ndarray]:
+    trace_id = str(trace["trace_id"])
+    expected_ids = [str(row["sentence_id"]) for row in reasoning_sentences(trace)]
+    source = paths["traces"] / "prm_graph_embeddings" / f"{trace_id}.npz"
+    if not source.exists():
+        raise RuntimeError(
+            f"missing embedding artifact for {trace_id}; rerun collect-embeddings "
+            "with --all-trajectories"
+        )
+    with np.load(source, allow_pickle=False) as data:
+        sentence_ids = data["sentence_ids"].astype(str).tolist()
+        embeddings = data["embeddings"].astype(np.float64)
+        model_id = str(data["model_id"].item())
+    if sentence_ids != expected_ids:
+        raise RuntimeError(f"embedding/sentence alignment mismatch for {trace_id}")
+    if model_id != str(values["embedding_model_id"]):
+        raise RuntimeError(f"stale embedding artifact for {trace_id}: {model_id}")
+    return sentence_ids, embeddings
+
+
+def atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    write_jsonl(temporary, rows)
+    temporary.replace(path)
+
+
+def load_embedding_graph_probe(
+    paths: dict[str, Path],
+) -> tuple[dict[str, np.ndarray | float], float, dict[str, Any]]:
+    benchmark_path = paths["tables"] / "prm_graph_labeler_benchmark.json"
+    probe_path = paths["models"] / "prm_graph_labeler_probes.npz"
+    if not benchmark_path.exists() or not probe_path.exists():
+        raise RuntimeError("run the 15-trajectory evaluate command before applying labels")
+    benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
+    method = benchmark.get("methods", {}).get("embedding_graph")
+    if not method or not method.get("validation_gate", {}).get("passed", False):
+        raise RuntimeError("the embedding graph did not pass its saved validation gate")
+    with np.load(probe_path, allow_pickle=False) as data:
+        model: dict[str, np.ndarray | float] = {
+            "mean": data["embedding_graph_mean"].astype(np.float64),
+            "scale": data["embedding_graph_scale"].astype(np.float64),
+            "coefficients": data["embedding_graph_coefficients"].astype(np.float64),
+            "intercept": float(data["embedding_graph_intercept"].item()),
+        }
+        threshold = float(data["embedding_graph_threshold"].item())
+    if not np.isclose(threshold, float(method["threshold"]), atol=1e-12):
+        raise RuntimeError("embedding graph threshold differs between probe and report")
+    return model, threshold, benchmark
+
+
+def apply_embedding_graph(
+    paths: dict[str, Path], traces: list[dict[str, Any]],
+    strong: dict[str, dict[str, Any]], values: dict[str, Any],
+) -> None:
+    model, threshold, benchmark = load_embedding_graph_probe(paths)
+    graph_k = int(benchmark["benchmark_settings"]["graph_k"])
+    output: list[dict[str, Any]] = []
+    score_rows: list[dict[str, Any]] = []
+    strong_count = pseudo_count = 0
+    for index, trace in enumerate(traces, start=1):
+        trace_id = str(trace["trace_id"])
+        if trace_id in strong:
+            output.append(strong[trace_id])
+            strong_count += 1
+            print(
+                f"[label {index}/{len(traces)}] {trace_id}: preserved strong labels",
+                flush=True,
+            )
+            continue
+        sentence_ids, embeddings = load_embedding_artifact(paths, trace, values)
+        features = temporal_graph_features(embeddings, k=graph_k)
+        reasoning_probabilities = predict_logistic(model, features)
+        probabilities: list[float | None] = []
+        reasoning_index = 0
+        sentence_scores = []
+        for sentence in trace["sentences"]:
+            if sentence.get("is_reasoning", False):
+                probability = float(reasoning_probabilities[reasoning_index])
+                sentence_scores.append({
+                    "sentence_id": str(sentence["sentence_id"]),
+                    "progress_probability": probability,
+                    "predicted_progress": bool(probability >= threshold),
+                })
+                probabilities.append(probability)
+                reasoning_index += 1
+            else:
+                probabilities.append(None)
+        if reasoning_index != len(sentence_ids):
+            raise RuntimeError(f"reasoning count changed for {trace_id}")
+        annotations = annotations_from_event_probabilities(
+            trace,
+            probabilities,
+            threshold,
+            float(values["review_margin"]),
+        )
+        output.append({
+            "trace_id": trace_id,
+            "task_id": str(trace["task_id"]),
+            "domain": str(trace["domain"]),
+            "split": str(trace["split"]),
+            "source": "embedding_graph_pseudo_labeler",
+            "detector_threshold": threshold,
+            "benchmark_annotation_sha256": benchmark["annotation_sha256"],
+            "annotations": annotations,
+        })
+        score_rows.append({
+            "trace_id": trace_id,
+            "task_id": str(trace["task_id"]),
+            "domain": str(trace["domain"]),
+            "split": str(trace["split"]),
+            "threshold": threshold,
+            "sentences": sentence_scores,
+        })
+        pseudo_count += 1
+        predicted = sum(row["predicted_progress"] for row in sentence_scores)
+        print(
+            f"[label {index}/{len(traces)}] {trace_id}: "
+            f"{predicted}/{len(sentence_scores)} graph progress events",
+            flush=True,
+        )
+
+    tables = paths["tables"]
+    current = tables / "sentence_annotations.jsonl"
+    backup = tables / "sentence_annotations_before_embedding_graph.jsonl"
+    if current.exists() and not backup.exists():
+        backup.write_bytes(current.read_bytes())
+    strong_ordered = [row for row in output if str(row["trace_id"]) in strong]
+    atomic_write_jsonl(tables / "sentence_annotations_strong_seed.jsonl", strong_ordered)
+    atomic_write_jsonl(tables / "sentence_annotations_embedding_graph.jsonl", output)
+    atomic_write_jsonl(current, output)
+    atomic_write_jsonl(tables / "embedding_graph_pseudo_label_scores.jsonl", score_rows)
+    print(
+        f"Wrote {len(output)} complete trajectories: {strong_count} strong + "
+        f"{pseudo_count} embedding-graph pseudo-labeled. Active labels: {current}",
+        flush=True,
+    )
+
+
 def labels_for_trace(
     trace: dict[str, Any], record: dict[str, Any], sentence_ids: list[str],
 ) -> np.ndarray:
@@ -602,13 +766,24 @@ def main() -> None:
     paths = ensure_output_dirs(config)
     values = settings(config)
     records = strong_records(paths)
-    traces = labeled_traces(paths, records)
+    if (
+        args.command == "apply-embedding-graph"
+        or (
+            args.command == "collect-embeddings"
+            and bool(args.all_trajectories)
+        )
+    ):
+        traces = all_baseline_traces(paths)
+    else:
+        traces = labeled_traces(paths, records)
     if args.command == "collect-prm":
         collect_prm(paths, traces, values, args.limit)
     elif args.command == "collect-embeddings":
         collect_embeddings(paths, traces, values, args.limit)
     elif args.command == "evaluate":
         evaluate(paths, traces, records, values)
+    elif args.command == "apply-embedding-graph":
+        apply_embedding_graph(paths, traces, records, values)
     else:  # pragma: no cover
         raise AssertionError(args.command)
 

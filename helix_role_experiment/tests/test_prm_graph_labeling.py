@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +28,38 @@ SPEC.loader.exec_module(SCRIPT_MODULE)
 
 
 class PrmGraphLabelingTests(unittest.TestCase):
+    def test_saved_embedding_graph_probe_can_be_reloaded_for_application(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tables = root / "tables"
+            models = root / "models"
+            tables.mkdir()
+            models.mkdir()
+            (tables / "prm_graph_labeler_benchmark.json").write_text(
+                json.dumps({
+                    "methods": {
+                        "embedding_graph": {
+                            "threshold": 0.7,
+                            "validation_gate": {"passed": True},
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+            np.savez(
+                models / "prm_graph_labeler_probes.npz",
+                embedding_graph_mean=np.zeros(2),
+                embedding_graph_scale=np.ones(2),
+                embedding_graph_coefficients=np.ones(2),
+                embedding_graph_intercept=np.asarray(-0.5),
+                embedding_graph_threshold=np.asarray(0.7),
+            )
+            model, threshold, _ = SCRIPT_MODULE.load_embedding_graph_probe({
+                "tables": tables, "models": models,
+            })
+            self.assertEqual(threshold, 0.7)
+            self.assertEqual(len(model["coefficients"]), 2)
+
     def test_reasonflux_config_gets_tokenizer_padding_id(self):
         config = SimpleNamespace()
         tokenizer = SimpleNamespace(pad_token_id=151643, eos_token_id=151645)

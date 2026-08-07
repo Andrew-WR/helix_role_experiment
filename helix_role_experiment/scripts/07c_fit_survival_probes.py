@@ -37,6 +37,7 @@ def rebuild_partial_annotations(config: dict, paths: dict[str, Path]) -> None:
             row.get("source") in {
                 "attention_reorientation_pseudo_labeler",
                 "attention_burst_pseudo_labeler",
+                "embedding_graph_pseudo_labeler",
             }
             for row in current
         ):
@@ -104,6 +105,7 @@ def coverage_report(
                 "modernbert_sequential_event_tagger",
                 "attention_reorientation_pseudo_labeler",
                 "attention_burst_pseudo_labeler",
+                "embedding_graph_pseudo_labeler",
             }
             for source in source_counts
         ),

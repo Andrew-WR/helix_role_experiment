@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,6 +16,23 @@ SPEC.loader.exec_module(FINALIZER)
 
 
 class ReadinessFinalizerTests(unittest.TestCase):
+    def test_stale_controls_can_be_ignored_for_gated_only_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            gated = root / "gated.json"
+            old_control = root / "always.json"
+            gated.write_text(
+                json.dumps({"steering_run_fingerprint": "new"}), encoding="utf-8"
+            )
+            old_control.write_text(
+                json.dumps({"steering_run_fingerprint": "old"}), encoding="utf-8"
+            )
+            compatible, stale = FINALIZER.partition_steering_sources(
+                [gated, old_control], "new"
+            )
+            self.assertEqual(compatible, [gated])
+            self.assertEqual(stale, [old_control])
+
     def test_status_distinguishes_within_model_failure_from_replication(self):
         failed = [{
             "candidate_method": True,
