@@ -160,6 +160,49 @@ receiver score is continuous. It writes:
   merged labels for analysis. Thought anchors are not substituted for forward
   progress: they measure downstream attentional importance, not correctness.
 
+### Evaluation-only PRM and temporal-graph labelers
+
+This benchmark compares three candidate progress-event labelers against only
+the strong 15-trajectory annotation set: a direct PRM baseline, a directed
+temporal graph over ordinary sentence embeddings, and the same graph built
+from PRM reward-state vectors. It does **not** overwrite
+`sentence_annotations.jsonl` or create pseudo-labels.
+
+`Gen-Verse/ReasonFlux-PRM-7B` is used instead of Qwen2.5-Math-PRM-7B because it
+was trained for trajectory-response traces and long-CoT process scoring. Both
+remain unvalidated for code-domain sentence progress, so the report keeps math
+and code metrics separate. The graph's past edges measure continuity or
+redundancy; retrieval by later sentences measures future uptake. A direct PRM
+baseline is necessary because a quality reward is not itself a novelty label.
+
+Run the two resumable feature collectors and then the CPU-only evaluation:
+
+```bash
+# Two-T4 model sharding is configured automatically. Start with one trace.
+python scripts/07b_evaluate_prm_graph_labelers.py \
+  --config configs/qwen_9b_readiness_kaggle.json collect-prm --limit 1
+
+python scripts/07b_evaluate_prm_graph_labelers.py \
+  --config configs/qwen_9b_readiness_kaggle.json collect-prm
+
+python scripts/07b_evaluate_prm_graph_labelers.py \
+  --config configs/qwen_9b_readiness_kaggle.json collect-embeddings
+
+python scripts/07b_evaluate_prm_graph_labelers.py \
+  --config configs/qwen_9b_readiness_kaggle.json evaluate
+```
+
+The nine train trajectories determine weights and thresholds using
+leave-one-trajectory-out predictions. The four validation trajectories apply a
+predeclared precision/recall/lift gate and select among passing methods; the two
+test trajectories never select a method. Exact and one-sentence-tolerant event
+metrics, per-domain results, per-sentence scores, and the fitted probes are
+written to `tables/prm_graph_labeler_benchmark.json`,
+`tables/prm_graph_labeler_sentence_scores.jsonl`, and
+`models/prm_graph_labeler_probes.npz`. With only four validation and two test
+trajectories, a pass warrants a larger audited pilot rather than automatic
+promotion to the other 85 traces.
+
 ### Local fallback: sequential ModernBERT
 
 The preferred replacement for hosted or generative-LLM labeling is the
